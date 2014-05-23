@@ -1,32 +1,27 @@
 /*
-  svar (Simple Voice Activated Recorder) - svar.c
-  Copyright (c) 2010 Arkadiusz Bokowy
-
-  This program is free software: you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation, either version 3 of the License, or
-  (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
-
-  If you want to read full version of the GNU General Public License
-  see <http://www.gnu.org/licenses/>.
-
-  ** Note: **
-  For contact information and the latest version of this program see
-  my webpage <http://arkq.awardspace.us/#svar>.
-
-*/
+ * SVAR (Simple Voice Activated Recorder) - main.c
+ * Copyright (c) 2010 Arkadiusz Bokowy
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * If you want to read full version of the GNU General Public License
+ * see <http://www.gnu.org/licenses/>.
+ */
 
 #include <stdlib.h>
 #include <math.h>
 #include <getopt.h>
 #include <signal.h>
-#include <alsa/asoundlib.h>
 #include <sndfile.h>
+#include <alsa/asoundlib.h>
 #include <vorbis/vorbisenc.h>
 
 #define APP_NAME "svar"
@@ -209,7 +204,7 @@ void main_loop_WAV(snd_pcm_t *handle, struct hwconfig_t *hwconf,
 		time_diff = (cur_time.tv_sec - peak_time.tv_sec)*1000 +
 				(cur_time.tv_nsec - peak_time.tv_nsec)/1000000;
 
-		// if diff time is lower then fadeout lag write buffer to file		
+		// if diff time is lower then fadeout lag write buffer to file
 		if(time_diff < conf->fadeout_lag) {
 
 			if(create_file) { //create new output file if needed
@@ -364,7 +359,7 @@ void main_loop_OGG(snd_pcm_t *handle, struct hwconfig_t *hwconf,
 		time_diff = (cur_time.tv_sec - peak_time.tv_sec)*1000 +
 				(cur_time.tv_nsec - peak_time.tv_nsec)/1000000;
 
-		// if diff time is lower then fadeout lag write buffer to file		
+		// if diff time is lower then fadeout lag write buffer to file
 		if(time_diff < conf->fadeout_lag) {
 
 			if(create_file) { //create new output file if needed
