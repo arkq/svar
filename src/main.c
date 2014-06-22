@@ -1,6 +1,6 @@
 /*
- * SVAR (Simple Voice Activated Recorder) - main.c
- * Copyright (c) 2010 Arkadiusz Bokowy
+ * SVAR (Simple Voice Activated Recorder)
+ * Copyright (c) 2010-2014 Arkadiusz Bokowy
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,30 +16,58 @@
  * see <http://www.gnu.org/licenses/>.
  */
 
+#if HAVE_CONFIG_H
+#include "../config.h"
+#endif
+
 #include <stdlib.h>
-#include <math.h>
+#include <stdio.h>
 #include <getopt.h>
+#include <math.h>
+#include <pthread.h>
 #include <signal.h>
-#include <sndfile.h>
+#include <time.h>
 #include <alsa/asoundlib.h>
+#if ENABLE_SNDFILE
+#include <sndfile.h>
+#endif
+#if ENABLE_VORBISENC
 #include <vorbis/vorbisenc.h>
+#endif
 
-#define APP_NAME "svar"
-#define APP_VER "0.0.1"
+#include "debug.h"
 
-struct appconfig_t {
-	char output_fname_prefix[128];
-	int out_fmt;
 
-	int sig_threshold;         //in % of max signal
-	int fadeout_lag;           //in ms
-	unsigned int split_ftime;  //in s (if -1 "disable" split)
-
-	// data for OGG encoder
-	int bitrate_min, bitrate_nom, bitrate_max; //in bit/s
+enum encoding_format {
+	ENC_FORMAT_RAW = 0,
+	ENC_FORMAT_WAVE,
+	ENC_FORMAT_VORBIS,
 };
 
-#define FRAMES_PER_READ 4410
+struct encoding_format_info_t {
+	enum encoding_format id;
+	char name[16];
+};
+
+struct appconfig_t {
+	char output_prefix[128];
+	int verbose;
+
+	// if true, run the signal meter only
+	int signal_meter;
+
+	int threshold;    // % of max signal
+	int fadeout_time; // in ms
+	int split_time;   // in s (0 disables split)
+
+	enum encoding_format encoder;
+
+	// variable bit rate settings for encoder (bit per second)
+	int bitrate_min;
+	int bitrate_nom;
+	int bitrate_max;
+};
+
 struct hwconfig_t {
 	char device[25];
 	snd_pcm_format_t format;
@@ -47,524 +75,631 @@ struct hwconfig_t {
 	unsigned int rate, channels;
 };
 
-#define OUT_FORMATS_NB 2
-static char *out_formats[] = {"WAV", "OGG"};
+#define READER_FRAMES 512 * 8
+#define PROCESSING_FRAMES READER_FRAMES * 16
 
-// verbose flag
-int verbose;
+struct hwreader_t {
+	struct hwconfig_t *hw;
+	snd_pcm_t *handle;
 
-// Set hardware parameters
-int set_hwparams(snd_pcm_t *handle, struct hwconfig_t *hwconf)
-{
+	pthread_mutex_t mutex;
+	pthread_cond_t ready;
+	int16_t *buffer;
+	int current; // current buffer position
+	int size;    // size of the buffer
+};
+
+
+// global application settings
+static struct appconfig_t appconfig;
+static struct encoding_format_info_t appencoders[] = {
+#if ENABLE_VORBISENC
+	{ ENC_FORMAT_VORBIS, "ogg" },
+#endif
+#if ENABLE_SNDFILE
+	{ ENC_FORMAT_WAVE, "wav" },
+#endif
+	{ ENC_FORMAT_RAW, "raw" },
+};
+
+
+// Set hardware parameters.
+static int set_hwparams(snd_pcm_t *handle, struct hwconfig_t *hwconf) {
+
 	snd_pcm_hw_params_t *hw_params;
-	int ret_val;
+	int rv;
 
-	if((ret_val = snd_pcm_hw_params_malloc(&hw_params)) < 0){
+	if ((rv = snd_pcm_hw_params_malloc(&hw_params)) < 0) {
 		fprintf(stderr, "error: cannot allocate hw_param struct\n");
-		return ret_val;}
+		return rv;
+	}
 
 	// choose all parameters
-	if((ret_val = snd_pcm_hw_params_any(handle, hw_params)) < 0){
-		fprintf(stderr, "error: broken configuration (%s)\n", snd_strerror(ret_val));
-		return ret_val;}
+	if ((rv = snd_pcm_hw_params_any(handle, hw_params)) < 0) {
+		fprintf(stderr, "error: broken configuration (%s)\n", snd_strerror(rv));
+		return rv;
+	}
 
 	// set hardware access
-	if((ret_val = snd_pcm_hw_params_set_access(handle, hw_params, hwconf->access)) < 0){
-		fprintf(stderr, "error: cannot set access type (%s)\n", snd_strerror(ret_val));
-		return ret_val;}
+	if ((rv = snd_pcm_hw_params_set_access(handle, hw_params, hwconf->access)) < 0) {
+		fprintf(stderr, "error: cannot set access type (%s)\n", snd_strerror(rv));
+		return rv;
+	}
 
 	// set sample format
-	if((ret_val = snd_pcm_hw_params_set_format(handle, hw_params, hwconf->format)) < 0){
-		fprintf(stderr, "error: cannot set sample format (%s)\n", snd_strerror(ret_val));
-		return ret_val;}
+	if ((rv = snd_pcm_hw_params_set_format(handle, hw_params, hwconf->format)) < 0) {
+		fprintf(stderr, "error: cannot set sample format (%s)\n", snd_strerror(rv));
+		return rv;
+	}
 
 	// set the count of channels
-	if((ret_val = snd_pcm_hw_params_set_channels(handle, hw_params, hwconf->channels)) < 0){
-		fprintf(stderr, "error: cannot set channel count (%s)\n", snd_strerror(ret_val));
-		return ret_val;}
+	if ((rv = snd_pcm_hw_params_set_channels_near(handle, hw_params, &hwconf->channels)) < 0) {
+		fprintf(stderr, "error: cannot set channel count (%s)\n", snd_strerror(rv));
+		return rv;
+	}
 
 	// set the stream rate
-	if((ret_val = snd_pcm_hw_params_set_rate_near(handle, hw_params, &hwconf->rate, 0)) < 0){
-		fprintf(stderr, "error: cannot set sample rate (%s)\n", snd_strerror(ret_val));
-		return ret_val;}
+	if ((rv = snd_pcm_hw_params_set_rate_near(handle, hw_params, &hwconf->rate, 0)) < 0) {
+		fprintf(stderr, "error: cannot set sample rate (%s)\n", snd_strerror(rv));
+		return rv;
+	}
 
 	// write the parameters to device
-	if((ret_val = snd_pcm_hw_params(handle, hw_params)) < 0){
-		fprintf(stderr, "error: unable to set hw params (%s)\n", snd_strerror(ret_val));
-		return ret_val;}
+	if ((rv = snd_pcm_hw_params(handle, hw_params)) < 0) {
+		fprintf(stderr, "error: unable to set hw params (%s)\n", snd_strerror(rv));
+		return rv;
+	}
 
 	snd_pcm_hw_params_free(hw_params);
 	return 0;
 }
 
-// Setup Ctrl-C signal catch for application quit
+// Return the name of given encoder.
+static const char *get_encoder_name(enum encoding_format format) {
+	int i;
+	for (i = 0; (size_t)i < sizeof(appencoders) / sizeof(struct encoding_format_info_t); i++)
+		if (appencoders[i].id == format)
+			return appencoders[i].name;
+	return NULL;
+}
+
+// Print some information about the audio device and its configuration.
+static void print_audio_info(struct hwconfig_t *hwconf) {
+	printf("Capturing audio device: %s\n", hwconf->device);
+	printf("Hardware parameters: %iHz, %s, %i channel%c\n",
+			hwconf->rate, snd_pcm_format_name(hwconf->format),
+			hwconf->channels, hwconf->channels > 1 ? 's' : ' ');
+	printf("Output file format: %s\n", get_encoder_name(appconfig.encoder));
+	if (appconfig.encoder == ENC_FORMAT_VORBIS)
+		printf("  bitrates: %d, %d, %d kbit/s\n",
+				appconfig.bitrate_min == -1 ? -1 : appconfig.bitrate_min / 1000,
+				appconfig.bitrate_nom / 1000,
+				appconfig.bitrate_max == -1 ? -1 : appconfig.bitrate_max / 1000);
+}
+
+// Setup Ctrl-C signal catch for application quit.
 static int looop_mode;
 static void stop_loop_mode(int sig){looop_mode = 0;}
-void setup_quit_sigaction()
-{
+static void setup_quit_sigaction() {
 	struct sigaction sigact;
 
 	memset(&sigact, 0, sizeof(sigact));
 	sigact.sa_handler = stop_loop_mode;
-	if(sigaction(SIGINT, &sigact, NULL) == -1)
+	if (sigaction(SIGINT, &sigact, NULL) == -1)
 		fprintf(stderr, "warning: setting sigaction(SIGINT) failed\n");
 }
 
-// Print some information about audio device and its configuration
-void print_audio_info(struct hwconfig_t *hwconf, struct appconfig_t *conf)
-{
-	printf("Capturing audio device: %s\n", hwconf->device);
-	printf("Hardware parameters: %iHz, %s, %i channel%c\n", hwconf->rate,
-			snd_pcm_format_name(hwconf->format), hwconf->channels,
-			hwconf->channels > 1 ? 's' : ' ');
-	printf("Output file format: %s\n", out_formats[conf->out_fmt]);
-
-	if(conf->out_fmt == 1) //if OGG print bite rates
-		printf("  bitrates: %d, %d, %d kbit/s\n",
-				conf->bitrate_min == -1 ? -1 : conf->bitrate_min/1000,
-				conf->bitrate_nom/1000,
-				conf->bitrate_max == -1 ? -1 : conf->bitrate_max/1000);
-}
-
-// Allocate memory for ALSA read buffer
-int alloc_buffer_S16_LE(int16_t **buff, int channels)
-{
-	*buff = malloc(sizeof(int16_t)*FRAMES_PER_READ*channels);
-	if(*buff != NULL) return 0;
-
-	fprintf(stderr, "error: failed to allocate memory for read buffer\n");
-	return 1;
-}
-
-// Calculate max peak and amplitude RMSD (based on all channels)
-void peak_check_S16_LE(int16_t *buff, int frames, int channels,
-		int16_t *peak, int16_t *rms)
-{
-	int x;
+// Calculate max peak and amplitude RMSD (based on all channels).
+static void peak_check_S16_LE(const int16_t *buffer, int frames, int channels,
+		int16_t *peak, int16_t *rms) {
 	int16_t abslvl;
 	int64_t sum2;
+	int x;
 
 	*peak = 0;
-	for(x = sum2 = 0; x < frames*channels; x++) {
-		abslvl = abs(((int16_t*)buff)[x]);
-		if(*peak < abslvl) *peak = abslvl;
-
-		sum2 += abslvl*abslvl;
+	for (x = sum2 = 0; x < frames * channels; x++) {
+		abslvl = abs(((int16_t *)buffer)[x]);
+		if (*peak < abslvl)
+			*peak = abslvl;
+		sum2 += abslvl * abslvl;
 	}
-	*rms = sqrt(sum2/frames);
+	*rms = sqrt(sum2 / frames);
 }
 
-// Main recording loop with WAV format writing engine
-void main_loop_WAV(snd_pcm_t *handle, struct hwconfig_t *hwconf,
-		struct appconfig_t *conf)
-{
-	SNDFILE *fp;
-	SF_INFO sfinfo;
-
-	char ofname[128];
-	time_t cur_t;
-	struct tm *ofname_tm;
-	int16_t *buffer, max_peak, amp_rmsd;
-	int rd_len, wr_len, create_file;
-	struct timespec peak_time, cur_time;
-	unsigned int time_diff; //in [ms]
-
-	memset(&peak_time, 0, sizeof(peak_time));
-
-	memset(&sfinfo, 0, sizeof(sfinfo));
-	sfinfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
-	sfinfo.samplerate = hwconf->rate;
-	sfinfo.channels = hwconf->channels;
-
-	looop_mode = 1;
-	setup_quit_sigaction();
-
-	if(alloc_buffer_S16_LE(&buffer, hwconf->channels)) return;
-
-	create_file = 1;
-	while(looop_mode) { //main recording loop
-		rd_len = snd_pcm_readi(handle, buffer, FRAMES_PER_READ);
-
-		if(rd_len == -EPIPE) { //buffer overrun
-			snd_pcm_prepare(handle);
-			if(verbose){
-				printf("warning: pcm_readi buffer overrun\n");
-				fflush(stdout);}
-			continue;
-		}
-
-		peak_check_S16_LE(buffer, rd_len, hwconf->channels, &max_peak, &amp_rmsd);
-
-		// if max peak in buffer is greater then threshold then
-		// update last peak time
-		if(((int)max_peak)*100/0x7ffe > conf->sig_threshold)
-			clock_gettime(CLOCK_MONOTONIC, &peak_time);
-
-		clock_gettime(CLOCK_MONOTONIC, &cur_time);
-		time_diff = (cur_time.tv_sec - peak_time.tv_sec)*1000 +
-				(cur_time.tv_nsec - peak_time.tv_nsec)/1000000;
-
-		// if diff time is lower then fadeout lag write buffer to file
-		if(time_diff < conf->fadeout_lag) {
-
-			if(create_file) { //create new output file if needed
-				time(&cur_t); ofname_tm = localtime(&cur_t);
-				sprintf(ofname, "%s%02d%02d%02d%02d.wav", conf->output_fname_prefix,
-						ofname_tm->tm_mday, ofname_tm->tm_hour, ofname_tm->tm_min,
-						ofname_tm->tm_sec);
-
-				create_file = 0;
-				if((fp = sf_open(ofname, SFM_WRITE, &sfinfo)) == NULL){
-					fprintf(stderr, "error: unable to create output file\n");
-					return;}
-			}
-
-			wr_len = sf_writef_short(fp, buffer, FRAMES_PER_READ);
-		}
-		// split file time reached (close opened file and indicate to open new one)
-		else if(create_file == 0 && cur_time.tv_sec - peak_time.tv_sec
-				> conf->split_ftime){
-			create_file = 1;
-			sf_close(fp);}
-	}
-
-	// close only if there is opened file already
-	if(create_file == 0) sf_close(fp);
-
-	free(buffer);
-}
-
-// Display audio signal level
-void signal_level_loop(snd_pcm_t *handle, struct hwconfig_t *hwconf)
-{
-	int rd_len;
-	int16_t *buffer, max_peak, amp_rmsd;
-
-	looop_mode = 1;
-	setup_quit_sigaction();
-
-	if(alloc_buffer_S16_LE(&buffer, hwconf->channels)) return;
-
-	while(looop_mode) { //main recording loop
-		rd_len = snd_pcm_readi(handle, buffer, FRAMES_PER_READ);
-
-		if(rd_len == -EPIPE) { //buffer overrun
-			snd_pcm_prepare(handle);
-			if(verbose){
-				printf("warning: pcm_readi buffer overrun\n");
-				fflush(stdout);}
-			continue;
-		}
-
-		peak_check_S16_LE(buffer, rd_len, hwconf->channels, &max_peak, &amp_rmsd);
-
-		// print values "on fly"
-		printf("\rsignal peak [%%]: %3u, siganl RMS [%%]: %3u",
-				max_peak*100/0x7ffe, amp_rmsd*100/0x7ffe);
-		fflush(stdout);
-	}
-
-	printf("\n");
-	free(buffer);
-}
-
+#if ENABLE_VORBISENC
 // Do vorbis compression and write stream to OGG file
-int do_analysis_and_write_ogg(vorbis_dsp_state *vd, vorbis_block *vb,
-		ogg_stream_state *os, FILE *fp)
-{
-	int wr_len, sum_wr_len;
+static int do_analysis_and_write_ogg(vorbis_dsp_state *vd, vorbis_block *vb,
+		ogg_stream_state *os, FILE *fp) {
 	ogg_packet o_pack;
 	ogg_page o_page;
-
-	sum_wr_len = 0;
+	int wr_len = 0;
 
 	// do the main analysis and creating packets
-	while(vorbis_analysis_blockout(vd, vb) == 1) {
+	while (vorbis_analysis_blockout(vd, vb) == 1) {
 		vorbis_analysis(vb, NULL);
 		vorbis_bitrate_addblock(vb);
 
-		while(vorbis_bitrate_flushpacket(vd, &o_pack)) {
+		while (vorbis_bitrate_flushpacket(vd, &o_pack)) {
 			ogg_stream_packetin(os, &o_pack);
 
 			// form OGG pages and write it to output file
-			while(ogg_stream_pageout(os, &o_page)){
-				wr_len = fwrite(o_page.header, 1, o_page.header_len, fp);
+			while (ogg_stream_pageout(os, &o_page)) {
+				wr_len += fwrite(o_page.header, 1, o_page.header_len, fp);
 				wr_len += fwrite(o_page.body, 1, o_page.body_len, fp);
-				sum_wr_len += wr_len;}
+			}
 		}
 	}
-	return sum_wr_len;
+	return wr_len;
 }
+#endif /* ENABLE_VORBISENC */
 
-// Main recording loop with OGG format writing engine
-void main_loop_OGG(snd_pcm_t *handle, struct hwconfig_t *hwconf,
-		struct appconfig_t *conf)
-{
-	FILE *fp;
-	ogg_stream_state os;
-	ogg_packet o_pack_main, o_pack_comm, o_pack_code;
-	float **vorb_buffer;
-	vorbis_info vi;
-	vorbis_dsp_state vd;
-	vorbis_block vb;
-	vorbis_comment vc;
-	int fx, cx;
+// Audio signal data reader thread.
+static void *reader_thread(void *ptr) {
+	struct hwreader_t *data = (struct hwreader_t *)ptr;
+	int16_t *buffer = (int16_t *)malloc(sizeof(int16_t) * data->hw->channels * READER_FRAMES);
+	int16_t signal_peak;
+	int16_t signal_rmsd;
+	int rd_len;
 
-	char ofname[128];
-	time_t cur_t;
-	struct tm *ofname_tm;
-	int16_t *buffer, max_peak, amp_rmsd;
-	int rd_len, wr_len, create_file;
-	struct timespec peak_time, cur_time;
-	unsigned int time_diff; //in [ms]
+	struct timespec current_time;
+	struct timespec peak_time;
 
 	memset(&peak_time, 0, sizeof(peak_time));
 
-	// initialize vorbis encoder
-	vorbis_info_init(&vi);
-	if(vorbis_encode_init(&vi, hwconf->channels, hwconf->rate,
-			conf->bitrate_max, conf->bitrate_nom, conf->bitrate_min) < 0){
-		fprintf(stderr, "error: invalid parameters for vorbis bitrate\n");
-		vorbis_info_clear(&vi);
-		return;}
+	while (looop_mode) {
+		rd_len = snd_pcm_readi(data->handle, buffer, READER_FRAMES);
 
-	vorbis_comment_init(&vc);
-//	vorbis_comment_add(&vc, "SVAR");
-
-	looop_mode = 1;
-	setup_quit_sigaction();
-
-	if(alloc_buffer_S16_LE(&buffer, hwconf->channels)) return;
-
-	create_file = 1;
-	while(looop_mode) { //main recording loop
-		rd_len = snd_pcm_readi(handle, buffer, FRAMES_PER_READ);
-
-		if(rd_len == -EPIPE) { //buffer overrun
-			snd_pcm_prepare(handle);
-			if(verbose){
+		if (rd_len == -EPIPE) { // buffer overrun (this should not happen)
+			snd_pcm_recover(data->handle, rd_len, 1);
+			if (appconfig.verbose) {
 				printf("warning: pcm_readi buffer overrun\n");
-				fflush(stdout);}
+				fflush(stdout);
+			}
 			continue;
 		}
 
-		peak_check_S16_LE(buffer, rd_len, hwconf->channels, &max_peak, &amp_rmsd);
+		peak_check_S16_LE(buffer, rd_len, data->hw->channels, &signal_peak, &signal_rmsd);
 
-		// if max peak in buffer is greater then threshold then
-		// update last peak time
-		if(((int)max_peak)*100/0x7ffe > conf->sig_threshold)
-			clock_gettime(CLOCK_MONOTONIC, &peak_time);
+		if (appconfig.signal_meter) {
+			// dump current peak and RMS values to the stdout
+			printf("\rsignal peak [%%]: %3u, siganl RMS [%%]: %3u",
+					signal_peak * 100 / 0x7ffe, signal_rmsd * 100 / 0x7ffe);
+			fflush(stdout);
+			continue;
+		}
 
-		clock_gettime(CLOCK_MONOTONIC, &cur_time);
-		time_diff = (cur_time.tv_sec - peak_time.tv_sec)*1000 +
-				(cur_time.tv_nsec - peak_time.tv_nsec)/1000000;
+		// if the max peak in the buffer is greater than the threshold, update
+		// the last peak time
+		if ((int)signal_peak * 100 / 0x7ffe > appconfig.threshold)
+			clock_gettime(CLOCK_MONOTONIC_RAW, &peak_time);
 
-		// if diff time is lower then fadeout lag write buffer to file
-		if(time_diff < conf->fadeout_lag) {
+		clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
+		if ((current_time.tv_sec - peak_time.tv_sec) * 1000 +
+				(current_time.tv_nsec - peak_time.tv_nsec) / 1000000 < appconfig.fadeout_time) {
 
-			if(create_file) { //create new output file if needed
-				time(&cur_t); ofname_tm = localtime(&cur_t);
-				sprintf(ofname, "%s%02d%02d%02d%02d.ogg", conf->output_fname_prefix,
-						ofname_tm->tm_mday, ofname_tm->tm_hour, ofname_tm->tm_min,
-						ofname_tm->tm_sec);
+			pthread_mutex_lock(&data->mutex);
 
-				create_file = 0;
-				if((fp = fopen(ofname, "w")) == NULL){
-					fprintf(stderr, "error: unable to create output file\n");
-					goto fopenerr_exit;}
-
-				// this stuff needs to be initialized every new OGG file
-				// that's why it is here...
-				vorbis_analysis_init(&vd, &vi);
-				vorbis_block_init(&vd, &vb);
-				ogg_stream_init(&os, (ofname_tm->tm_mday << 24) + (ofname_tm->tm_hour << 16)
-						+ (ofname_tm->tm_min << 8) + ofname_tm->tm_sec);
-
-				// write three header packets to OGG stream
-				vorbis_analysis_headerout(&vd, &vc, &o_pack_main, &o_pack_comm, &o_pack_code);
-				ogg_stream_packetin(&os, &o_pack_main);
-				ogg_stream_packetin(&os, &o_pack_comm);
-				ogg_stream_packetin(&os, &o_pack_code);
+			// if this will happen, nothing is going to save us...
+			if (data->current == data->size) {
+				data->current = 0;
+				if (appconfig.verbose) {
+					printf("warning: reader buffer overrun\n");
+					fflush(stdout);
+				}
 			}
 
-			vorb_buffer = vorbis_analysis_buffer(&vd, rd_len);
+			// NOTE: The size of data returned by the pcm_read in the blocking mode is
+			//       always equal to the requested size. So, if the reader buffer (the
+			//       external one) is an integer multiplication of our internal buffer,
+			//       there is no need for any fancy boundary check. However, this might
+			//       not be true if someone is using CPU profiling tool, like cpulimit.
+			memcpy(&data->buffer[data->current], buffer, sizeof(int16_t) * rd_len * data->hw->channels);
+			data->current += rd_len * data->hw->channels;
 
-			// convert ALSA buffer into vorbis buffer
-			for(fx = 0; fx < rd_len; fx++) for(cx = 0; cx < hwconf->channels; cx++)
-				vorb_buffer[cx][fx] = buffer[fx*hwconf->channels + cx]/(float)0x7ffe;
+			// dump reader buffer usage
+			debug("buffer usage: %d of %d", data->current, data->size);
 
-			vorbis_analysis_wrote(&vd, rd_len);
-			wr_len = do_analysis_and_write_ogg(&vd, &vb, &os, fp);
-		}
-		// split file time reached (close opened file and indicate to open new one)
-		else if(create_file == 0 && cur_time.tv_sec - peak_time.tv_sec
-				> conf->split_ftime){
-			create_file = 1;
+			pthread_cond_broadcast(&data->ready);
+			pthread_mutex_unlock(&data->mutex);
 
-			// indicate end of data
-			vorbis_analysis_wrote(&vd, 0);
-			do_analysis_and_write_ogg(&vd, &vb, &os, fp);
-
-			fclose(fp);
-			ogg_stream_clear(&os);
-			vorbis_block_clear(&vb);
-			vorbis_dsp_clear(&vd);
 		}
 	}
 
-	// close only if there is opened file already
-	if(create_file == 0) {
-		// indicate end of data
-		vorbis_analysis_wrote(&vd, 0);
-		do_analysis_and_write_ogg(&vd, &vb, &os, fp);
+	// avoid dead-lock on the condition wait during the exit
+	pthread_cond_broadcast(&data->ready);
 
-		fclose(fp);
-		ogg_stream_clear(&os);
-		vorbis_block_clear(&vb);
-		vorbis_dsp_clear(&vd);
-	}
-
-fopenerr_exit:
-	vorbis_comment_clear(&vc);
-	vorbis_info_clear(&vi);
 	free(buffer);
+	return 0;
 }
 
-int main(int argc, char *argv[])
-{
-	int opt, ret_val, siglevel;
+// Audio signal data processing thread.
+static void *processing_thread(void *ptr) {
+	struct hwreader_t *data = (struct hwreader_t *)ptr;
+	const int channels = data->hw->channels;
+	int16_t *buffer = (int16_t *)malloc(sizeof(int16_t) * channels * PROCESSING_FRAMES);
+	int frames;
+
+	struct timespec current_time;
+	struct timespec previous_time;
+	struct tm tmp_tm_time;
+	time_t tmp_t_time;
+	int create_new_output;
+	char file_name[128];
+
+	FILE *fp = NULL;
+
+#if ENABLE_SNDFILE
+	SNDFILE *sffp = NULL;
+	SF_INFO sfinfo;
+
+	memset(&sfinfo, 0, sizeof(sfinfo));
+	sfinfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+	sfinfo.samplerate = data->hw->rate;
+	sfinfo.channels = channels;
+#endif /* ENABLE_SNDFILE */
+
+#if ENABLE_VORBISENC
+	ogg_stream_state ogg_s;
+	ogg_packet ogg_p_main;
+	ogg_packet ogg_p_comm;
+	ogg_packet ogg_p_code;
+	vorbis_info vbs_i;
+	vorbis_dsp_state vbs_d;
+	vorbis_block vbs_b;
+	vorbis_comment vbs_c;
+	float **vorbis_buffer;
+	int fi, ci;
+
+	if (appconfig.encoder == ENC_FORMAT_VORBIS) {
+		vorbis_info_init(&vbs_i);
+		vorbis_comment_init(&vbs_c);
+		if (vorbis_encode_init(&vbs_i, channels, data->hw->rate,
+				appconfig.bitrate_max, appconfig.bitrate_nom, appconfig.bitrate_min) < 0) {
+			fprintf(stderr, "error: invalid parameters for vorbis bit rate\n");
+			goto return_failure;
+		}
+		vorbis_comment_add(&vbs_c, "SVAR - Simple Voice Activated Recorder");
+	}
+#endif /* ENABLE_VORBISENC */
+
+	memset(&previous_time, 0, sizeof(previous_time));
+	create_new_output = 1;
+
+	while (looop_mode) {
+
+		// copy data from the reader buffer into our internal one
+		pthread_mutex_lock(&data->mutex);
+		if (data->current == 0) // wait until new data are available
+			pthread_cond_wait(&data->ready, &data->mutex);
+		memcpy(buffer, data->buffer, sizeof(int16_t) * data->current);
+		frames = data->current / channels;
+		data->current = 0;
+		pthread_mutex_unlock(&data->mutex);
+
+		// check if new file should be created (activity time based)
+		clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
+		if (appconfig.split_time &&
+				(current_time.tv_sec - previous_time.tv_sec) > appconfig.split_time)
+			create_new_output = 1;
+		memcpy(&previous_time, &current_time, sizeof(previous_time));
+
+		// create new output file if needed
+		if (create_new_output) {
+			create_new_output = 0;
+
+			tmp_t_time = time(NULL);
+			localtime_r(&tmp_t_time, &tmp_tm_time);
+			sprintf(file_name, "%s-%02d-%02d:%02d:%02d.%s",
+					appconfig.output_prefix,
+					tmp_tm_time.tm_mday, tmp_tm_time.tm_hour,
+					tmp_tm_time.tm_min, tmp_tm_time.tm_sec,
+					get_encoder_name(appconfig.encoder));
+
+			if (appconfig.verbose)
+				printf("info: creating new output file: %s\n", file_name);
+
+			// initialize new file for selected encoder
+			switch (appconfig.encoder) {
+#if ENABLE_SNDFILE
+			case ENC_FORMAT_WAVE:
+				if (sffp)
+					sf_close(sffp);
+				if ((sffp = sf_open(file_name, SFM_WRITE, &sfinfo)) == NULL) {
+					fprintf(stderr, "error: unable to create output file\n");
+					goto return_failure;
+				}
+				break;
+
+#endif /* ENABLE_SNDFILE */
+#if ENABLE_VORBISENC
+			case ENC_FORMAT_VORBIS:
+
+				if (fp) { // close previously initialized file
+
+					// indicate end of data
+					vorbis_analysis_wrote(&vbs_d, 0);
+					do_analysis_and_write_ogg(&vbs_d, &vbs_b, &ogg_s, fp);
+
+					ogg_stream_clear(&ogg_s);
+					vorbis_block_clear(&vbs_b);
+					vorbis_dsp_clear(&vbs_d);
+					fclose(fp);
+				}
+
+				if ((fp = fopen(file_name, "w")) == NULL) {
+					fprintf(stderr, "error: unable to create output file\n");
+					goto return_failure;
+				}
+
+				// initialize varbis analyzer every new OGG file
+				vorbis_analysis_init(&vbs_d, &vbs_i);
+				vorbis_block_init(&vbs_d, &vbs_b);
+				ogg_stream_init(&ogg_s, current_time.tv_sec);
+
+				// write three header packets to the OGG stream
+				vorbis_analysis_headerout(&vbs_d, &vbs_c, &ogg_p_main, &ogg_p_comm, &ogg_p_code);
+				ogg_stream_packetin(&ogg_s, &ogg_p_main);
+				ogg_stream_packetin(&ogg_s, &ogg_p_comm);
+				ogg_stream_packetin(&ogg_s, &ogg_p_code);
+				break;
+
+#endif /* ENABLE_VORBISENC */
+			case ENC_FORMAT_RAW:
+			default:
+				if (fp)
+					fclose(fp);
+				if ((fp = fopen(file_name, "w")) == NULL) {
+					fprintf(stderr, "error: unable to create output file\n");
+					goto return_failure;
+				}
+			}
+		}
+
+		// use selected encoder for data processing
+		switch (appconfig.encoder) {
+#if ENABLE_SNDFILE
+		case ENC_FORMAT_WAVE:
+			sf_writef_short(sffp, buffer, frames);
+			break;
+#endif /* ENABLE_SNDFILE */
+#if ENABLE_VORBISENC
+		case ENC_FORMAT_VORBIS:
+			vorbis_buffer = vorbis_analysis_buffer(&vbs_d, frames);
+			// convert ALSA buffer into the vorbis one
+			for (fi = 0; fi < frames; fi++)
+				for (ci = 0; ci < channels; ci++)
+					vorbis_buffer[ci][fi] = (float)(buffer[fi * channels + ci]) / 0x7ffe;
+			vorbis_analysis_wrote(&vbs_d, frames);
+			do_analysis_and_write_ogg(&vbs_d, &vbs_b, &ogg_s, fp);
+			break;
+#endif /* ENABLE_VORBISENC */
+		case ENC_FORMAT_RAW:
+		default:
+			fwrite(buffer, sizeof(int16_t) * channels, frames, fp);
+		}
+
+	}
+
+return_failure:
+
+	// clean up routines for selected encoder
+	switch (appconfig.encoder) {
+#if ENABLE_SNDFILE
+	case ENC_FORMAT_WAVE:
+		if (sffp)
+			sf_close(sffp);
+		break;
+#endif /* ENABLE_SNDFILE */
+#if ENABLE_VORBISENC
+	case ENC_FORMAT_VORBIS:
+		if (fp) {
+			// indicate end of data
+			vorbis_analysis_wrote(&vbs_d, 0);
+			do_analysis_and_write_ogg(&vbs_d, &vbs_b, &ogg_s, fp);
+
+			ogg_stream_clear(&ogg_s);
+			vorbis_block_clear(&vbs_b);
+			vorbis_dsp_clear(&vbs_d);
+			fclose(fp);
+		}
+		vorbis_comment_clear(&vbs_c);
+		vorbis_info_clear(&vbs_i);
+		break;
+#endif /* ENABLE_VORBISENC */
+	case ENC_FORMAT_RAW:
+	default:
+		if (fp)
+			fclose(fp);
+	}
+
+	free(buffer);
+	return 0;
+}
+
+int main(int argc, char *argv[]) {
+
+	int opt;
 	struct option longopts[] = {
 		{"help", no_argument, NULL, 'h'},
 		{"verbose", no_argument, NULL, 'v'},
 		{"device", required_argument, NULL, 'D'},
 		{"channels", required_argument, NULL, 'C'},
-		{"rate", required_argument, NULL, 'R'},
+		{"rate", required_argument, NULL, 'B'},
 		{"sig-level", required_argument, NULL, 'l'},
 		{"fadeout-lag", required_argument, NULL, 'f'},
 		{"out-format", required_argument, NULL, 'o'},
 		{"split-time", required_argument, NULL, 's'},
 		{"sig-meter", no_argument, NULL, 'm'},
-		{0, 0, 0, 0}
+		{0, 0, 0, 0},
 	};
+	pthread_t thread_read_id;
+	pthread_t thread_process_id;
 	struct hwconfig_t hwconf;
-	snd_pcm_t *snd_handle;
-	struct appconfig_t conf;
+	struct hwreader_t hwreader;
+	int return_value;
+	int rv, i;
 
-	// set compiled in defaults
+	strcpy(appconfig.output_prefix, "rec");
+	appconfig.threshold = 2;
+	appconfig.fadeout_time = 500;
+	appconfig.split_time = 0;
+	appconfig.signal_meter = 0;
+
+	// default audio encoder
+#if ENABLE_SNDFILE
+	appconfig.encoder = ENC_FORMAT_WAVE;
+#elif ENABLE_VORBISENC
+	appconfig.encoder = ENC_FORMAT_VORBIS;
+#else
+	appconfig.encoder = ENC_FORMAT_RAW;
+#endif
+
+	// default compression settings
+	appconfig.bitrate_min = 32000;
+	appconfig.bitrate_nom = 64000;
+	appconfig.bitrate_max = 128000;
+
+	// default input audio device settings
 	strcpy(hwconf.device, "hw:0,0");
-	hwconf.format = SND_PCM_FORMAT_S16_LE;         //modifying this is not recommended
-	hwconf.access = SND_PCM_ACCESS_RW_INTERLEAVED; //whole audio code is based on it...
+	hwconf.format = SND_PCM_FORMAT_S16_LE;         // modifying this is not recommended
+	hwconf.access = SND_PCM_ACCESS_RW_INTERLEAVED; // whole audio code is based on it...
 	hwconf.rate = 44100;
 	hwconf.channels = 1;
 
-	memset(&conf, 0, sizeof(conf));
-	strcpy(conf.output_fname_prefix, "rec-");
-	conf.sig_threshold = 2;
-	conf.fadeout_lag = 500;
-	conf.split_ftime = -1;
-
-	// default OGG compression
-	conf.bitrate_min = 32000;
-	conf.bitrate_nom = 64000;
-	conf.bitrate_max = 128000;
-
-	verbose = 0;
-	siglevel = 0;
-
-	// print app banner
-	printf("SVAR (Simple Voice Activated Recorder) ver. " APP_VER "\n");
+	// print application banner, just for the lulz
+	printf("SVAR (Simple Voice Activated Recorder)\n");
 
 	// arguments parser
-	while((opt = getopt_long(argc, argv, "hvmD:R:C:l:f:o:s:", longopts, NULL)) != -1)
-		switch(opt) {
+	while ((opt = getopt_long(argc, argv, "hvmD:B:C:l:f:o:s:", longopts, NULL)) != -1)
+		switch (opt) {
 		case 'h':
-			printf("Usage: " APP_NAME " [options]\n"
-"  -h, --help\t\t\tprint this help text and exit\n"
-"  -D DEV, --device=DEV\t\tselect audio input device (current: %s)\n"
-"  -R NN, --rate=NN\t\tset sample rate (current: %u)\n"
-"  -C NN, --channels=NN\t\tspecify number of channels (current: %u)\n"
-"  -l NN, --sig-level=NN\t\tactivation signal threshold (current: %u)\n"
-"  -f NN, --fadeout-lag=NN\tfadeout time lag in ms (current: %u)\n"
-"  -s NN, --split-time=NN\tsplit output file time in s (current: %d)\n"
-"  -o FMT, --out-format=FMT\toutput file format (current: %s)\n"
-"  -m, --sig-meter\t\taudio signal level meter\n"
-"  -v, --verbose\t\t\tprint some extra information\n",
-					hwconf.device, hwconf.rate, hwconf.channels, conf.sig_threshold,
-					conf.fadeout_lag, conf.split_ftime, out_formats[conf.out_fmt]);
-			exit(EXIT_SUCCESS);
-		case 'v': verbose = 1; break;
+			printf("usage: svar [options]\n"
+					"  -h, --help\t\t\tprint recipe for a delicious cake\n"
+					"  -D DEV, --device=DEV\t\tselect audio input device (current: %s)\n"
+					"  -B NN, --rate=NN\t\tset sample rate (current: %u)\n"
+					"  -C NN, --channels=NN\t\tspecify number of channels (current: %u)\n"
+					"  -l NN, --sig-level=NN\t\tactivation signal threshold (current: %u)\n"
+					"  -f NN, --fadeout-lag=NN\tfadeout time lag in ms (current: %u)\n"
+					"  -s NN, --split-time=NN\tsplit output file time in s (current: %d)\n"
+					"  -o FMT, --out-format=FMT\toutput file format (current: %s)\n"
+					"  -m, --sig-meter\t\taudio signal level meter\n"
+					"  -v, --verbose\t\t\tprint some extra information\n",
+					hwconf.device, hwconf.rate, hwconf.channels,
+					appconfig.threshold, appconfig.fadeout_time,
+					appconfig.split_time, get_encoder_name(appconfig.encoder));
+			return EXIT_SUCCESS;
+		case 'v':
+			appconfig.verbose = 1;
+			break;
 		case 'D':
 			memset(hwconf.device, 0, sizeof(hwconf.device));
 			strncpy(hwconf.device, optarg, sizeof(hwconf.device) - 1);
 			break;
-		case 'R':
-			ret_val = atoi(optarg);
-			hwconf.rate = ret_val;
+		case 'B':
+			hwconf.rate = atoi(optarg);
 			break;
 		case 'C':
-			ret_val = atoi(optarg);
-			hwconf.channels = ret_val;
+			hwconf.channels = atoi(optarg);
 			break;
-		case 'm': siglevel = 1; break;
+		case 'm':
+			appconfig.signal_meter = 1;
+			break;
 		case 'l':
-			ret_val = atoi(optarg);
-			if(ret_val < 0 || ret_val > 100)
-				printf("warning: sig-level out of range [0, 100] (%d)"
-						", leaving default\n", ret_val);
-			else conf.sig_threshold = ret_val;
+			rv = atoi(optarg);
+			if (rv < 0 || rv > 100)
+				printf("warning: sig-level out of range [0, 100] (%d),"
+						" leaving default\n", rv);
+			else
+				appconfig.threshold = rv;
 			break;
 		case 'f':
-			ret_val = atoi(optarg);
-			if(ret_val < 100 || ret_val > 1000000)
-				printf("warning: fadeout-lag out of range [100, 1000000] (%d)"
-						", leaving default\n", ret_val);
-			else conf.fadeout_lag = ret_val;
+			rv = atoi(optarg);
+			if (rv < 100 || rv > 1000000)
+				printf("warning: fadeout-lag out of range [100, 1000000] (%d),"
+						" leaving default\n", rv);
+			else
+				appconfig.fadeout_time = rv;
 			break;
 		case 'o':
-			conf.out_fmt = -1;
-			for(ret_val = 0; ret_val < OUT_FORMATS_NB; ret_val++)
-				if(strcasecmp(out_formats[ret_val], optarg) == 0) conf.out_fmt = ret_val;
-			if(conf.out_fmt == -1){
+			for (i = 0; (size_t)i < sizeof(appencoders) / sizeof(struct encoding_format_info_t); i++)
+				if (strcasecmp(appencoders[i].name, optarg) == 0)
+					appconfig.encoder = appencoders[i].id;
+			if (i == sizeof(appencoders) / sizeof(struct encoding_format_info_t))
 				printf("warning: format not available, leaving default\n");
-				conf.out_fmt = 0;}
 			break;
 		case 's':
-			ret_val = atoi(optarg);
-			if(ret_val < -1 || ret_val > 1000000)
-				printf("warning: split-time out of range [-1, 1000000] (%d)"
-						", leaving default\n", ret_val);
-			else conf.split_ftime = ret_val;
+			rv = atoi(optarg);
+			if (rv < -1 || rv > 1000000)
+				printf("warning: split-time out of range [-1, 1000000] (%d),"
+						" leaving default\n", rv);
+			else
+				appconfig.split_time = rv;
 			break;
 		default:
-			printf("Try '" APP_NAME " --help' for more information.\n");
-			exit(EXIT_FAILURE);
+			printf("Try 'svar --help' for more information.\n");
+			return EXIT_FAILURE;
 		}
+
+	// initialize reader structure
+	hwreader.hw = &hwconf;
+	hwreader.handle = NULL;
+	pthread_mutex_init(&hwreader.mutex, NULL);
+	pthread_cond_init(&hwreader.ready, NULL);
+	hwreader.size = hwconf.channels * PROCESSING_FRAMES;
+	hwreader.buffer = (int16_t *)malloc(sizeof(int16_t) * hwreader.size);
+	hwreader.current = 0;
+
+	if (hwreader.buffer == NULL) {
+		fprintf(stderr, "error: failed to allocate memory for read buffer\n");
+		goto return_failure;
+	}
 
 	// open audio device
-	ret_val = snd_pcm_open(&snd_handle, hwconf.device, SND_PCM_STREAM_CAPTURE, 0);
-	if(ret_val < 0){
+	if (snd_pcm_open(&hwreader.handle, hwconf.device, SND_PCM_STREAM_CAPTURE, 0) < 0) {
 		fprintf(stderr, "error: cannot open audio device (%s)\n", hwconf.device);
-		exit(EXIT_FAILURE);}
+		goto return_failure;
+	}
 
 	// set hardware parameters
-	if(set_hwparams(snd_handle, &hwconf) < 0){
-		snd_pcm_close(snd_handle); exit(EXIT_FAILURE);}
+	if (set_hwparams(hwreader.handle, &hwconf) < 0)
+		goto return_failure;
 
-	if((ret_val = snd_pcm_prepare(snd_handle)) < 0){
-		fprintf(stderr, "error: cannot prepare audio interface to use (%s)\n",
-				snd_strerror(ret_val));
-		snd_pcm_close(snd_handle); exit(EXIT_FAILURE);}
+	if ((rv = snd_pcm_prepare(hwreader.handle)) < 0) {
+		fprintf(stderr, "error: cannot prepare audio interface: %s\n", snd_strerror(rv));
+		goto return_failure;
+	}
 
-	if(verbose) print_audio_info(&hwconf, &conf);
+	if (appconfig.verbose)
+		print_audio_info(&hwconf);
 
-	// audio loops
-	if(siglevel) signal_level_loop(snd_handle, &hwconf);
-	else
-		switch(conf.out_fmt){
-		case 0:	main_loop_WAV(snd_handle, &hwconf, &conf); break;
-		case 1: main_loop_OGG(snd_handle, &hwconf, &conf);
-		}
+	looop_mode = 1;
+	setup_quit_sigaction();
 
-	snd_pcm_close(snd_handle);
-	exit(EXIT_SUCCESS);
+	// initialize thread for input reading
+	if (pthread_create(&thread_read_id, NULL, &reader_thread, &hwreader) != 0) {
+		fprintf(stderr, "error: cannot create input thread\n");
+		goto return_failure;
+	}
+	// initialize thread for data processing
+	if (pthread_create(&thread_process_id, NULL, &processing_thread, &hwreader) != 0) {
+		fprintf(stderr, "error: cannot create processing thread\n");
+		goto return_failure;
+	}
+
+	pthread_join(thread_read_id, NULL);
+	pthread_join(thread_process_id, NULL);
+
+	return_value = EXIT_SUCCESS;
+	goto return_success;
+
+return_failure:
+	return_value = EXIT_FAILURE;
+
+return_success:
+
+	snd_pcm_close(hwreader.handle);
+	pthread_mutex_destroy(&hwreader.mutex);
+	pthread_cond_destroy(&hwreader.ready);
+	free(hwreader.buffer);
+	return return_value;
 }
