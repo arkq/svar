@@ -1,5 +1,5 @@
 /*
- * SVAR (Simple Voice Activated Recorder)
+ * SVAR - Simple Voice Activated Recorder
  * Copyright (c) 2010-2014 Arkadiusz Bokowy
  *
  * This program is free software: you can redistribute it and/or modify
@@ -165,16 +165,18 @@ static const char *get_encoder_name(enum encoding_format format) {
 
 // Print some information about the audio device and its configuration.
 static void print_audio_info(struct hwconfig_t *hwconf) {
-	printf("Capturing audio device: %s\n", hwconf->device);
-	printf("Hardware parameters: %iHz, %s, %i channel%c\n",
-			hwconf->rate, snd_pcm_format_name(hwconf->format),
-			hwconf->channels, hwconf->channels > 1 ? 's' : ' ');
-	printf("Output file format: %s\n", get_encoder_name(appconfig.encoder));
+	printf("Capturing audio device: %s\n"
+			"Hardware parameters: %iHz, %s, %i channel%c\n"
+			"Output file format: %s\n",
+			hwconf->device, hwconf->rate,
+			snd_pcm_format_name(hwconf->format),
+			hwconf->channels, hwconf->channels > 1 ? 's' : ' ',
+			get_encoder_name(appconfig.encoder));
 	if (appconfig.encoder == ENC_FORMAT_VORBIS)
 		printf("  bitrates: %d, %d, %d kbit/s\n",
-				appconfig.bitrate_min == -1 ? -1 : appconfig.bitrate_min / 1000,
+				appconfig.bitrate_min / 1000,
 				appconfig.bitrate_nom / 1000,
-				appconfig.bitrate_max == -1 ? -1 : appconfig.bitrate_max / 1000);
+				appconfig.bitrate_max / 1000);
 }
 
 // Setup Ctrl-C signal catch for application quit.
@@ -192,12 +194,13 @@ static void setup_quit_sigaction() {
 // Calculate max peak and amplitude RMSD (based on all channels).
 static void peak_check_S16_LE(const int16_t *buffer, int frames, int channels,
 		int16_t *peak, int16_t *rms) {
+	const int size = frames * channels;
 	int16_t abslvl;
 	int64_t sum2;
 	int x;
 
 	*peak = 0;
-	for (x = sum2 = 0; x < frames * channels; x++) {
+	for (x = sum2 = 0; x < size; x++) {
 		abslvl = abs(((int16_t *)buffer)[x]);
 		if (*peak < abslvl)
 			*peak = abslvl;
@@ -207,7 +210,7 @@ static void peak_check_S16_LE(const int16_t *buffer, int frames, int channels,
 }
 
 #if ENABLE_VORBISENC
-// Do vorbis compression and write stream to OGG file
+// Do vorbis compression and write stream to OGG file.
 static int do_analysis_and_write_ogg(vorbis_dsp_state *vd, vorbis_block *vb,
 		ogg_stream_state *os, FILE *fp) {
 	ogg_packet o_pack;
@@ -262,7 +265,7 @@ static void *reader_thread(void *ptr) {
 
 		if (appconfig.signal_meter) {
 			// dump current peak and RMS values to the stdout
-			printf("\rsignal peak [%%]: %3u, siganl RMS [%%]: %3u",
+			printf("\rsignal peak [%%]: %3u, siganl RMS [%%]: %3u\r",
 					signal_peak * 100 / 0x7ffe, signal_rmsd * 100 / 0x7ffe);
 			fflush(stdout);
 			continue;
@@ -305,6 +308,9 @@ static void *reader_thread(void *ptr) {
 		}
 	}
 
+	if (appconfig.signal_meter)
+		printf("\n");
+
 	// avoid dead-lock on the condition wait during the exit
 	pthread_cond_broadcast(&data->ready);
 
@@ -324,7 +330,8 @@ static void *processing_thread(void *ptr) {
 	struct tm tmp_tm_time;
 	time_t tmp_t_time;
 	int create_new_output;
-	char file_name[128];
+	// it must contain a prefix and the timestamp
+	char file_name[192];
 
 	FILE *fp = NULL;
 
@@ -364,6 +371,10 @@ static void *processing_thread(void *ptr) {
 
 	memset(&previous_time, 0, sizeof(previous_time));
 	create_new_output = 1;
+
+	if (appconfig.signal_meter)
+		// it is not a failure, though, we just want to politely skip the loop
+		goto return_failure;
 
 	while (looop_mode) {
 
@@ -524,10 +535,11 @@ int main(int argc, char *argv[]) {
 		{"verbose", no_argument, NULL, 'v'},
 		{"device", required_argument, NULL, 'D'},
 		{"channels", required_argument, NULL, 'C'},
-		{"rate", required_argument, NULL, 'B'},
+		{"rate", required_argument, NULL, 'R'},
 		{"sig-level", required_argument, NULL, 'l'},
 		{"fadeout-lag", required_argument, NULL, 'f'},
 		{"out-format", required_argument, NULL, 'o'},
+		{"out-prefix", required_argument, NULL, 'p'},
 		{"split-time", required_argument, NULL, 's'},
 		{"sig-meter", no_argument, NULL, 'm'},
 		{0, 0, 0, 0},
@@ -567,26 +579,28 @@ int main(int argc, char *argv[]) {
 	hwconf.channels = 1;
 
 	// print application banner, just for the lulz
-	printf("SVAR (Simple Voice Activated Recorder)\n");
+	printf("SVAR - Simple Voice Activated Recorder\n");
 
 	// arguments parser
-	while ((opt = getopt_long(argc, argv, "hvmD:B:C:l:f:o:s:", longopts, NULL)) != -1)
+	while ((opt = getopt_long(argc, argv, "hvmD:R:C:l:f:o:p:s:", longopts, NULL)) != -1)
 		switch (opt) {
 		case 'h':
 			printf("usage: svar [options]\n"
 					"  -h, --help\t\t\tprint recipe for a delicious cake\n"
 					"  -D DEV, --device=DEV\t\tselect audio input device (current: %s)\n"
-					"  -B NN, --rate=NN\t\tset sample rate (current: %u)\n"
+					"  -R NN, --rate=NN\t\tset sample rate (current: %u)\n"
 					"  -C NN, --channels=NN\t\tspecify number of channels (current: %u)\n"
 					"  -l NN, --sig-level=NN\t\tactivation signal threshold (current: %u)\n"
 					"  -f NN, --fadeout-lag=NN\tfadeout time lag in ms (current: %u)\n"
 					"  -s NN, --split-time=NN\tsplit output file time in s (current: %d)\n"
+					"  -p STR, --out-prefix=STR\toutput file prefix (current: %s)\n"
 					"  -o FMT, --out-format=FMT\toutput file format (current: %s)\n"
 					"  -m, --sig-meter\t\taudio signal level meter\n"
 					"  -v, --verbose\t\t\tprint some extra information\n",
 					hwconf.device, hwconf.rate, hwconf.channels,
 					appconfig.threshold, appconfig.fadeout_time,
-					appconfig.split_time, get_encoder_name(appconfig.encoder));
+					appconfig.split_time, appconfig.output_prefix,
+					get_encoder_name(appconfig.encoder));
 			return EXIT_SUCCESS;
 		case 'v':
 			appconfig.verbose = 1;
@@ -595,7 +609,7 @@ int main(int argc, char *argv[]) {
 			memset(hwconf.device, 0, sizeof(hwconf.device));
 			strncpy(hwconf.device, optarg, sizeof(hwconf.device) - 1);
 			break;
-		case 'B':
+		case 'R':
 			hwconf.rate = atoi(optarg);
 			break;
 		case 'C':
@@ -627,10 +641,13 @@ int main(int argc, char *argv[]) {
 			if (i == sizeof(appencoders) / sizeof(struct encoding_format_info_t))
 				printf("warning: format not available, leaving default\n");
 			break;
+		case 'p':
+			strncpy(appconfig.output_prefix, optarg, sizeof(appconfig.output_prefix) - 1);
+			break;
 		case 's':
 			rv = atoi(optarg);
-			if (rv < -1 || rv > 1000000)
-				printf("warning: split-time out of range [-1, 1000000] (%d),"
+			if (rv < 0 || rv > 1000000)
+				printf("warning: split-time out of range [0, 1000000] (%d),"
 						" leaving default\n", rv);
 			else
 				appconfig.split_time = rv;
@@ -696,7 +713,6 @@ return_failure:
 	return_value = EXIT_FAILURE;
 
 return_success:
-
 	snd_pcm_close(hwreader.handle);
 	pthread_mutex_destroy(&hwreader.mutex);
 	pthread_cond_destroy(&hwreader.ready);

@@ -21,7 +21,7 @@ name. The timestamp is in the following format: DD-HH:MM:SS.
 
 For the fine adjustment of the activation condition (the signal level), one can run svar with the
 `--sig-meter` parameter. This activates the signal meter mode, in which the maximal peak value and
-the RMSD is displayed. Activation threshold is based on the maximal peak value in the signal
+the RMS is displayed. Activation threshold is based on the maximal peak value in the signal
 packed (time of tenth of the second).
 
 Instalation
