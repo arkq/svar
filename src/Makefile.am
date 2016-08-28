@@ -1,13 +1,15 @@
 # SVAR - Makefile.am
-# Copyright (c) 2014 Arkadiusz Bokowy
+# Copyright (c) 2014-2016 Arkadiusz Bokowy
 
 bin_PROGRAMS = svar
 svar_SOURCES = main.c
 
-svar_CFLAGS = \
+AM_CFLAGS = \
+	@ALSA_CFLAGS@ \
 	@SNDFILE_CFLAGS@ \
-	@VORBISENC_CFLAGS@
+	@VORBIS_CFLAGS@
 
-svar_LDADD = \
+LDADD = \
+	@ALSA_LIBS@ \
 	@SNDFILE_LIBS@ \
-	@VORBISENC_LIBS@
+	@VORBIS_LIBS@

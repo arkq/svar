@@ -24,10 +24,10 @@ For the fine adjustment of the activation condition (the signal level), one can 
 the RMS is displayed. Activation threshold is based on the maximal peak value in the signal
 packed (time of tenth of the second).
 
-Instalation
------------
+Installation
+------------
 
 	$ autoreconf --install
 	$ mkdir build && cd build
-	$ ../configure --enable-sndfile --enable-vorbisenc
+	$ ../configure --enable-sndfile --enable-vorbis
 	$ make && make install

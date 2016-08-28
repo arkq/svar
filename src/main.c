@@ -9,22 +9,23 @@
  */
 
 #if HAVE_CONFIG_H
-#include "../config.h"
+# include "config.h"
 #endif
 
-#include <stdlib.h>
-#include <stdio.h>
 #include <getopt.h>
 #include <math.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
+
 #include <alsa/asoundlib.h>
 #if ENABLE_SNDFILE
-#include <sndfile.h>
+# include <sndfile.h>
 #endif
-#if ENABLE_VORBISENC
-#include <vorbis/vorbisenc.h>
+#if ENABLE_VORBIS
+# include <vorbis/vorbisenc.h>
 #endif
 
 #include "debug.h"
@@ -85,7 +86,7 @@ struct hwreader_t {
 // global application settings
 static struct appconfig_t appconfig;
 static struct encoding_format_info_t appencoders[] = {
-#if ENABLE_VORBISENC
+#if ENABLE_VORBIS
 	{ ENC_FORMAT_VORBIS, "ogg" },
 #endif
 #if ENABLE_SNDFILE
@@ -173,14 +174,15 @@ static void print_audio_info(struct hwconfig_t *hwconf) {
 
 // Setup Ctrl-C signal catch for application quit.
 static int looop_mode;
-static void stop_loop_mode(int sig){looop_mode = 0;}
-static void setup_quit_sigaction() {
-	struct sigaction sigact;
+static void stop_loop_mode(int sig){
+	(void)sig;
+	looop_mode = 0;
+}
 
-	memset(&sigact, 0, sizeof(sigact));
-	sigact.sa_handler = stop_loop_mode;
+static void setup_quit_sigaction() {
+	struct sigaction sigact = { .sa_handler = stop_loop_mode };
 	if (sigaction(SIGINT, &sigact, NULL) == -1)
-		fprintf(stderr, "warning: setting sigaction(SIGINT) failed\n");
+		perror("warning: Setting signal handler failed");
 }
 
 // Calculate max peak and amplitude RMSD (based on all channels).
@@ -201,7 +203,7 @@ static void peak_check_S16_LE(const int16_t *buffer, int frames, int channels,
 	*rms = sqrt(sum2 / frames);
 }
 
-#if ENABLE_VORBISENC
+#if ENABLE_VORBIS
 // Do vorbis compression and write stream to OGG file.
 static int do_analysis_and_write_ogg(vorbis_dsp_state *vd, vorbis_block *vb,
 		ogg_stream_state *os, FILE *fp) {
@@ -226,7 +228,7 @@ static int do_analysis_and_write_ogg(vorbis_dsp_state *vd, vorbis_block *vb,
 	}
 	return wr_len;
 }
-#endif /* ENABLE_VORBISENC */
+#endif /* ENABLE_VORBIS */
 
 // Audio signal data reader thread.
 static void *reader_thread(void *ptr) {
@@ -237,9 +239,7 @@ static void *reader_thread(void *ptr) {
 	int rd_len;
 
 	struct timespec current_time;
-	struct timespec peak_time;
-
-	memset(&peak_time, 0, sizeof(peak_time));
+	struct timespec peak_time = { 0 };
 
 	while (looop_mode) {
 		rd_len = snd_pcm_readi(data->handle, buffer, READER_FRAMES);
@@ -318,10 +318,10 @@ static void *processing_thread(void *ptr) {
 	int frames;
 
 	struct timespec current_time;
-	struct timespec previous_time;
+	struct timespec previous_time = { 0 };
 	struct tm tmp_tm_time;
 	time_t tmp_t_time;
-	int create_new_output;
+	int create_new_output = 1;
 	// it must contain a prefix and the timestamp
 	char file_name[192];
 
@@ -329,15 +329,14 @@ static void *processing_thread(void *ptr) {
 
 #if ENABLE_SNDFILE
 	SNDFILE *sffp = NULL;
-	SF_INFO sfinfo;
-
-	memset(&sfinfo, 0, sizeof(sfinfo));
-	sfinfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
-	sfinfo.samplerate = data->hw->rate;
-	sfinfo.channels = channels;
+	SF_INFO sfinfo = {
+		.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16,
+		.samplerate = data->hw->rate,
+		.channels = channels,
+	};
 #endif /* ENABLE_SNDFILE */
 
-#if ENABLE_VORBISENC
+#if ENABLE_VORBIS
 	ogg_stream_state ogg_s;
 	ogg_packet ogg_p_main;
 	ogg_packet ogg_p_comm;
@@ -359,10 +358,7 @@ static void *processing_thread(void *ptr) {
 		}
 		vorbis_comment_add(&vbs_c, "SVAR - Simple Voice Activated Recorder");
 	}
-#endif /* ENABLE_VORBISENC */
-
-	memset(&previous_time, 0, sizeof(previous_time));
-	create_new_output = 1;
+#endif /* ENABLE_VORBIS */
 
 	if (appconfig.signal_meter)
 		// it is not a failure, though, we just want to politely skip the loop
@@ -414,7 +410,7 @@ static void *processing_thread(void *ptr) {
 				break;
 
 #endif /* ENABLE_SNDFILE */
-#if ENABLE_VORBISENC
+#if ENABLE_VORBIS
 			case ENC_FORMAT_VORBIS:
 
 				if (fp) { // close previously initialized file
@@ -446,7 +442,7 @@ static void *processing_thread(void *ptr) {
 				ogg_stream_packetin(&ogg_s, &ogg_p_code);
 				break;
 
-#endif /* ENABLE_VORBISENC */
+#endif /* ENABLE_VORBIS */
 			case ENC_FORMAT_RAW:
 			default:
 				if (fp)
@@ -465,7 +461,7 @@ static void *processing_thread(void *ptr) {
 			sf_writef_short(sffp, buffer, frames);
 			break;
 #endif /* ENABLE_SNDFILE */
-#if ENABLE_VORBISENC
+#if ENABLE_VORBIS
 		case ENC_FORMAT_VORBIS:
 			vorbis_buffer = vorbis_analysis_buffer(&vbs_d, frames);
 			// convert ALSA buffer into the vorbis one
@@ -475,7 +471,7 @@ static void *processing_thread(void *ptr) {
 			vorbis_analysis_wrote(&vbs_d, frames);
 			do_analysis_and_write_ogg(&vbs_d, &vbs_b, &ogg_s, fp);
 			break;
-#endif /* ENABLE_VORBISENC */
+#endif /* ENABLE_VORBIS */
 		case ENC_FORMAT_RAW:
 		default:
 			fwrite(buffer, sizeof(int16_t) * channels, frames, fp);
@@ -493,7 +489,7 @@ return_failure:
 			sf_close(sffp);
 		break;
 #endif /* ENABLE_SNDFILE */
-#if ENABLE_VORBISENC
+#if ENABLE_VORBIS
 	case ENC_FORMAT_VORBIS:
 		if (fp) {
 			// indicate end of data
@@ -508,7 +504,7 @@ return_failure:
 		vorbis_comment_clear(&vbs_c);
 		vorbis_info_clear(&vbs_i);
 		break;
-#endif /* ENABLE_VORBISENC */
+#endif /* ENABLE_VORBIS */
 	case ENC_FORMAT_RAW:
 	default:
 		if (fp)
@@ -552,7 +548,7 @@ int main(int argc, char *argv[]) {
 	// default audio encoder
 #if ENABLE_SNDFILE
 	appconfig.encoder = ENC_FORMAT_WAVE;
-#elif ENABLE_VORBISENC
+#elif ENABLE_VORBIS
 	appconfig.encoder = ENC_FORMAT_VORBIS;
 #else
 	appconfig.encoder = ENC_FORMAT_RAW;
@@ -598,8 +594,8 @@ int main(int argc, char *argv[]) {
 			appconfig.verbose = 1;
 			break;
 		case 'D':
-			memset(hwconf.device, 0, sizeof(hwconf.device));
 			strncpy(hwconf.device, optarg, sizeof(hwconf.device) - 1);
+			hwconf.device[sizeof(hwconf.device) - 1] = '\0';
 			break;
 		case 'R':
 			hwconf.rate = atoi(optarg);
@@ -645,7 +641,7 @@ int main(int argc, char *argv[]) {
 				appconfig.split_time = rv;
 			break;
 		default:
-			printf("Try 'svar --help' for more information.\n");
+			fprintf(stderr, "Try '%s --help' for more information.\n", argv[0]);
 			return EXIT_FAILURE;
 		}
 
