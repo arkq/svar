@@ -1,25 +1,15 @@
 /*
  * SVAR - debug.h
- * Copyright (c) 2014 Arkadiusz Bokowy
+ * Copyright (c) 2014-2016 Arkadiusz Bokowy
  *
- * This file is a part of a SVAR.
+ * This file is a part of SVAR.
  *
- * SVAR is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * This project is licensed under the terms of the MIT license.
  *
- * SVAR is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * If you want to read full version of the GNU General Public License
- * see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef __DEBUG_H
-#define __DEBUG_H
+#ifndef SVAR_DEBUG_H_
+#define SVAR_DEBUG_H_
 
 #ifdef HAVE_CONFIG_H
 #include "../config.h"
