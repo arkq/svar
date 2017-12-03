@@ -31,6 +31,8 @@
 
 #include "debug.h"
 
+#define READER_FRAMES 512 * 8
+#define PROCESSING_FRAMES READER_FRAMES * 16
 
 enum output_format {
 	FORMAT_RAW = 0,
@@ -52,7 +54,16 @@ static const struct {
 #endif
 };
 
-struct appconfig_t {
+/* global application settings */
+static struct appconfig_t {
+
+	/* capturing PCM device */
+	snd_pcm_t *pcm;
+	char pcm_device[25];
+	snd_pcm_format_t pcm_format;
+	snd_pcm_access_t pcm_access;
+	unsigned int pcm_channels;
+	unsigned int pcm_rate;
 
 	/* if true, run signal meter only */
 	bool signal_meter;
@@ -70,22 +81,8 @@ struct appconfig_t {
 	int bitrate_min;
 	int bitrate_nom;
 	int bitrate_max;
-};
 
-struct hwconfig_t {
-	char device[25];
-	snd_pcm_format_t format;
-	snd_pcm_access_t access;
-	unsigned int rate, channels;
-};
-
-#define READER_FRAMES 512 * 8
-#define PROCESSING_FRAMES READER_FRAMES * 16
-
-struct hwreader_t {
-	struct hwconfig_t *hw;
-	snd_pcm_t *handle;
-
+	/* read/write synchronization */
 	pthread_mutex_t mutex;
 	pthread_cond_t ready;
 	int16_t *buffer;
@@ -93,11 +90,38 @@ struct hwreader_t {
 	int current;
 	/* buffer size */
 	int size;
+
+} appconfig = {
+
+	.pcm_device = "default",
+	.pcm_format = SND_PCM_FORMAT_S16_LE,
+	.pcm_access = SND_PCM_ACCESS_RW_INTERLEAVED,
+	.pcm_channels = 1,
+	.pcm_rate = 44100,
+
+	.signal_meter = false,
+	.verbose = false,
+
+	.output_prefix = "rec",
+	/* default output format */
+#if ENABLE_SNDFILE
+	.output_format = FORMAT_WAVE,
+#elif ENABLE_VORBIS
+	.output_format = FORMAT_VORBIS,
+#else
+	.output_format = FORMAT_RAW,
+#endif
+
+	.threshold = 2,
+	.fadeout_time = 500,
+	.split_time = 0,
+
+	/* default compression settings */
+	.bitrate_min = 32000,
+	.bitrate_nom = 64000,
+	.bitrate_max = 128000,
+
 };
-
-
-/* global application settings */
-static struct appconfig_t appconfig;
 
 static bool main_loop_on = true;
 static void main_loop_stop(int sig) {
@@ -111,54 +135,48 @@ static void main_loop_stop(int sig) {
 }
 
 /* Set hardware parameters. */
-static int set_hwparams(snd_pcm_t *handle, struct hwconfig_t *hwconf) {
+static int set_hw_params(snd_pcm_t *pcm, char **msg) {
 
-	snd_pcm_hw_params_t *hw_params;
-	int rv;
+	snd_pcm_hw_params_t *params;
+	char buf[256];
+	int dir = 0;
+	int err;
 
-	if ((rv = snd_pcm_hw_params_malloc(&hw_params)) < 0) {
-		fprintf(stderr, "error: cannot allocate hw_param struct\n");
-		return rv;
+	snd_pcm_hw_params_alloca(&params);
+
+	if ((err = snd_pcm_hw_params_any(pcm, params)) != 0) {
+		snprintf(buf, sizeof(buf), "Set all possible ranges: %s", snd_strerror(err));
+		goto fail;
+	}
+	if ((err = snd_pcm_hw_params_set_access(pcm, params, appconfig.pcm_access)) != 0) {
+		snprintf(buf, sizeof(buf), "Set assess type: %s: %s",
+				snd_strerror(err), snd_pcm_access_name(appconfig.pcm_access));
+		goto fail;
+	}
+	if ((err = snd_pcm_hw_params_set_format(pcm, params, appconfig.pcm_format)) != 0) {
+		snprintf(buf, sizeof(buf), "Set format: %s: %s",
+				snd_strerror(err), snd_pcm_format_name(appconfig.pcm_format));
+		goto fail;
+	}
+	if ((err = snd_pcm_hw_params_set_channels_near(pcm, params, &appconfig.pcm_channels)) != 0) {
+		snprintf(buf, sizeof(buf), "Set channels: %s: %d", snd_strerror(err), appconfig.pcm_channels);
+		goto fail;
+	}
+	if ((err = snd_pcm_hw_params_set_rate_near(pcm, params, &appconfig.pcm_rate, &dir)) != 0) {
+		snprintf(buf, sizeof(buf), "Set sampling rate: %s: %d", snd_strerror(err), appconfig.pcm_rate);
+		goto fail;
+	}
+	if ((err = snd_pcm_hw_params(pcm, params)) != 0) {
+		snprintf(buf, sizeof(buf), "%s", snd_strerror(err));
+		goto fail;
 	}
 
-	/* choose all parameters */
-	if ((rv = snd_pcm_hw_params_any(handle, hw_params)) < 0) {
-		fprintf(stderr, "error: broken configuration (%s)\n", snd_strerror(rv));
-		return rv;
-	}
-
-	/* set hardware access */
-	if ((rv = snd_pcm_hw_params_set_access(handle, hw_params, hwconf->access)) < 0) {
-		fprintf(stderr, "error: cannot set access type (%s)\n", snd_strerror(rv));
-		return rv;
-	}
-
-	/* set sample format */
-	if ((rv = snd_pcm_hw_params_set_format(handle, hw_params, hwconf->format)) < 0) {
-		fprintf(stderr, "error: cannot set sample format (%s)\n", snd_strerror(rv));
-		return rv;
-	}
-
-	/* set the count of channels */
-	if ((rv = snd_pcm_hw_params_set_channels_near(handle, hw_params, &hwconf->channels)) < 0) {
-		fprintf(stderr, "error: cannot set channel count (%s)\n", snd_strerror(rv));
-		return rv;
-	}
-
-	/* set the stream rate */
-	if ((rv = snd_pcm_hw_params_set_rate_near(handle, hw_params, &hwconf->rate, 0)) < 0) {
-		fprintf(stderr, "error: cannot set sample rate (%s)\n", snd_strerror(rv));
-		return rv;
-	}
-
-	/* write the parameters to device */
-	if ((rv = snd_pcm_hw_params(handle, hw_params)) < 0) {
-		fprintf(stderr, "error: unable to set hw params (%s)\n", snd_strerror(rv));
-		return rv;
-	}
-
-	snd_pcm_hw_params_free(hw_params);
 	return 0;
+
+fail:
+	if (msg != NULL)
+		*msg = strdup(buf);
+	return err;
 }
 
 /* Return the name of a given output format. */
@@ -171,14 +189,16 @@ static const char *get_output_format_name(enum output_format format) {
 }
 
 /* Print some information about the audio device and its configuration. */
-static void print_audio_info(struct hwconfig_t *hwconf) {
-	printf("Capturing audio device: %s\n"
-			"Hardware parameters: %iHz, %s, %i channel%s\n"
-			"Output file format: %s\n",
-			hwconf->device, hwconf->rate,
-			snd_pcm_format_name(hwconf->format),
-			hwconf->channels, hwconf->channels > 1 ? "s" : "",
-			get_output_format_name(appconfig.output_format));
+static void print_audio_info(void) {
+	printf("Selected PCM device: %s\n"
+			"Hardware parameters: %iHz, %s, %i channel%s\n",
+			appconfig.pcm_device,
+			appconfig.pcm_rate,
+			snd_pcm_format_name(appconfig.pcm_format),
+			appconfig.pcm_channels, appconfig.pcm_channels > 1 ? "s" : "");
+	if (!appconfig.signal_meter)
+		printf("Output file format: %s\n",
+				get_output_format_name(appconfig.output_format));
 	if (appconfig.output_format == FORMAT_OGG)
 		printf("  bitrates: %d, %d, %d kbit/s\n",
 				appconfig.bitrate_min / 1000,
@@ -234,9 +254,10 @@ static int do_analysis_and_write_ogg(vorbis_dsp_state *vd, vorbis_block *vb,
 #endif
 
 /* Audio signal data reader thread. */
-static void *reader_thread(void *ptr) {
-	struct hwreader_t *data = (struct hwreader_t *)ptr;
-	int16_t *buffer = (int16_t *)malloc(sizeof(int16_t) * data->hw->channels * READER_FRAMES);
+static void *reader_thread(void *arg) {
+	(void)arg;
+
+	int16_t *buffer = (int16_t *)malloc(sizeof(int16_t) * appconfig.pcm_channels * READER_FRAMES);
 	int16_t signal_peak;
 	int16_t signal_rmsd;
 	int rd_len;
@@ -245,10 +266,10 @@ static void *reader_thread(void *ptr) {
 	struct timespec peak_time = { 0 };
 
 	while (main_loop_on) {
-		rd_len = snd_pcm_readi(data->handle, buffer, READER_FRAMES);
+		rd_len = snd_pcm_readi(appconfig.pcm, buffer, READER_FRAMES);
 
 		if (rd_len == -EPIPE) { /* buffer overrun (this should not happen) */
-			snd_pcm_recover(data->handle, rd_len, 1);
+			snd_pcm_recover(appconfig.pcm, rd_len, 1);
 			if (appconfig.verbose) {
 				printf("warning: pcm_readi buffer overrun\n");
 				fflush(stdout);
@@ -256,7 +277,7 @@ static void *reader_thread(void *ptr) {
 			continue;
 		}
 
-		peak_check_S16_LE(buffer, rd_len, data->hw->channels, &signal_peak, &signal_rmsd);
+		peak_check_S16_LE(buffer, rd_len, appconfig.pcm_channels, &signal_peak, &signal_rmsd);
 
 		if (appconfig.signal_meter) {
 			/* dump current peak and RMS values to the stdout */
@@ -275,11 +296,11 @@ static void *reader_thread(void *ptr) {
 		if ((current_time.tv_sec - peak_time.tv_sec) * 1000 +
 				(current_time.tv_nsec - peak_time.tv_nsec) / 1000000 < appconfig.fadeout_time) {
 
-			pthread_mutex_lock(&data->mutex);
+			pthread_mutex_lock(&appconfig.mutex);
 
 			/* if this will happen, nothing is going to save us... */
-			if (data->current == data->size) {
-				data->current = 0;
+			if (appconfig.current == appconfig.size) {
+				appconfig.current = 0;
 				if (appconfig.verbose) {
 					printf("warning: reader buffer overrun\n");
 					fflush(stdout);
@@ -291,14 +312,14 @@ static void *reader_thread(void *ptr) {
 			 *       external one) is an integer multiplication of our internal buffer,
 			 *       there is no need for any fancy boundary check. However, this might
 			 *       not be true if someone is using CPU profiling tool, like cpulimit. */
-			memcpy(&data->buffer[data->current], buffer, sizeof(int16_t) * rd_len * data->hw->channels);
-			data->current += rd_len * data->hw->channels;
+			memcpy(&appconfig.buffer[appconfig.current], buffer, sizeof(int16_t) * rd_len * appconfig.pcm_channels);
+			appconfig.current += rd_len * appconfig.pcm_channels;
 
 			/* dump reader buffer usage */
-			debug("buffer usage: %d of %d", data->current, data->size);
+			debug("buffer usage: %d of %d", appconfig.current, appconfig.size);
 
-			pthread_cond_broadcast(&data->ready);
-			pthread_mutex_unlock(&data->mutex);
+			pthread_cond_broadcast(&appconfig.ready);
+			pthread_mutex_unlock(&appconfig.mutex);
 
 		}
 	}
@@ -307,18 +328,21 @@ static void *reader_thread(void *ptr) {
 		printf("\n");
 
 	/* avoid dead-lock on the condition wait during the exit */
-	pthread_cond_broadcast(&data->ready);
+	pthread_cond_broadcast(&appconfig.ready);
 
 	free(buffer);
 	return 0;
 }
 
 /* Audio signal data processing thread. */
-static void *processing_thread(void *ptr) {
-	struct hwreader_t *data = (struct hwreader_t *)ptr;
-	const int channels = data->hw->channels;
-	int16_t *buffer = (int16_t *)malloc(sizeof(int16_t) * channels * PROCESSING_FRAMES);
-	int frames;
+static void *processing_thread(void *arg) {
+	(void)arg;
+
+	if (appconfig.signal_meter)
+		return NULL;
+
+	int16_t *buffer = (int16_t *)malloc(sizeof(int16_t) * appconfig.pcm_channels * PROCESSING_FRAMES);
+	unsigned int frames;
 
 	struct timespec current_time;
 	struct timespec previous_time = { 0 };
@@ -334,10 +358,10 @@ static void *processing_thread(void *ptr) {
 	SNDFILE *sffp = NULL;
 	SF_INFO sfinfo = {
 		.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16,
-		.samplerate = data->hw->rate,
-		.channels = channels,
+		.channels = appconfig.pcm_channels,
+		.samplerate = appconfig.pcm_rate,
 	};
-#endif /* ENABLE_SNDFILE */
+#endif
 
 #if ENABLE_VORBIS
 	ogg_stream_state ogg_s;
@@ -349,12 +373,12 @@ static void *processing_thread(void *ptr) {
 	vorbis_block vbs_b;
 	vorbis_comment vbs_c;
 	float **vorbis_buffer;
-	int fi, ci;
+	size_t fi, ci;
 
 	if (appconfig.output_format == FORMAT_OGG) {
 		vorbis_info_init(&vbs_i);
 		vorbis_comment_init(&vbs_c);
-		if (vorbis_encode_init(&vbs_i, channels, data->hw->rate,
+		if (vorbis_encode_init(&vbs_i, appconfig.pcm_channels, appconfig.pcm_rate,
 				appconfig.bitrate_max, appconfig.bitrate_nom, appconfig.bitrate_min) < 0) {
 			fprintf(stderr, "error: invalid parameters for vorbis bit rate\n");
 			goto fail;
@@ -363,20 +387,16 @@ static void *processing_thread(void *ptr) {
 	}
 #endif /* ENABLE_VORBIS */
 
-	if (appconfig.signal_meter)
-		/* it is not a failure, though, we just want to politely skip the loop */
-		goto fail;
-
 	while (main_loop_on) {
 
 		/* copy data from the reader buffer into our internal one */
-		pthread_mutex_lock(&data->mutex);
-		if (data->current == 0) /* wait until new data are available */
-			pthread_cond_wait(&data->ready, &data->mutex);
-		memcpy(buffer, data->buffer, sizeof(int16_t) * data->current);
-		frames = data->current / channels;
-		data->current = 0;
-		pthread_mutex_unlock(&data->mutex);
+		pthread_mutex_lock(&appconfig.mutex);
+		if (appconfig.current == 0) /* wait until new data are available */
+			pthread_cond_wait(&appconfig.ready, &appconfig.mutex);
+		memcpy(buffer, appconfig.buffer, sizeof(int16_t) * appconfig.current);
+		frames = appconfig.current / appconfig.pcm_channels;
+		appconfig.current = 0;
+		pthread_mutex_unlock(&appconfig.mutex);
 
 		/* check if new file should be created (activity time based) */
 		clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
@@ -468,14 +488,14 @@ static void *processing_thread(void *ptr) {
 			vorbis_buffer = vorbis_analysis_buffer(&vbs_d, frames);
 			/* convert ALSA buffer into the vorbis one */
 			for (fi = 0; fi < frames; fi++)
-				for (ci = 0; ci < channels; ci++)
-					vorbis_buffer[ci][fi] = (float)(buffer[fi * channels + ci]) / 0x7ffe;
+				for (ci = 0; ci < appconfig.pcm_channels; ci++)
+					vorbis_buffer[ci][fi] = (float)(buffer[fi * appconfig.pcm_channels + ci]) / 0x7ffe;
 			vorbis_analysis_wrote(&vbs_d, frames);
 			do_analysis_and_write_ogg(&vbs_d, &vbs_b, &ogg_s, fp);
 			break;
 #endif /* ENABLE_VORBIS */
 		case FORMAT_RAW:
-			fwrite(buffer, sizeof(int16_t) * channels, frames, fp);
+			fwrite(buffer, sizeof(int16_t) * appconfig.pcm_channels, frames, fp);
 		}
 
 	}
@@ -518,6 +538,7 @@ fail:
 int main(int argc, char *argv[]) {
 
 	int opt;
+	size_t i;
 	const char *opts = "hvmD:R:C:l:f:o:p:s:";
 	const struct option longopts[] = {
 		{"help", no_argument, NULL, 'h'},
@@ -533,40 +554,6 @@ int main(int argc, char *argv[]) {
 		{"sig-meter", no_argument, NULL, 'm'},
 		{0, 0, 0, 0},
 	};
-	pthread_t thread_read_id;
-	pthread_t thread_process_id;
-	struct hwconfig_t hwconf;
-	struct hwreader_t hwreader;
-	int status;
-	size_t i;
-	int rv;
-
-	strcpy(appconfig.output_prefix, "rec");
-	appconfig.threshold = 2;
-	appconfig.fadeout_time = 500;
-	appconfig.split_time = 0;
-	appconfig.signal_meter = 0;
-
-	/* default audio encoder */
-#if ENABLE_SNDFILE
-	appconfig.output_format = FORMAT_WAVE;
-#elif ENABLE_VORBIS
-	appconfig.output_format = FORMAT_OGG;
-#else
-	appconfig.output_format = FORMAT_RAW;
-#endif
-
-	/* default compression settings */
-	appconfig.bitrate_min = 32000;
-	appconfig.bitrate_nom = 64000;
-	appconfig.bitrate_max = 128000;
-
-	/* default input audio device settings */
-	strcpy(hwconf.device, "hw:0,0");
-	hwconf.format = SND_PCM_FORMAT_S16_LE;         /* modifying this is not recommended */
-	hwconf.access = SND_PCM_ACCESS_RW_INTERLEAVED; /* whole audio code is based on it... */
-	hwconf.rate = 44100;
-	hwconf.channels = 1;
 
 	/* print application banner, just for the lulz */
 	printf("SVAR - Simple Voice Activated Recorder\n");
@@ -587,7 +574,7 @@ int main(int argc, char *argv[]) {
 					"  -o FMT, --out-format=FMT\toutput file format (current: %s)\n"
 					"  -m, --sig-meter\t\taudio signal level meter\n"
 					"  -v, --verbose\t\t\tprint some extra information\n",
-					hwconf.device, hwconf.rate, hwconf.channels,
+					appconfig.pcm_device, appconfig.pcm_rate, appconfig.pcm_channels,
 					appconfig.threshold, appconfig.fadeout_time,
 					appconfig.split_time, appconfig.output_prefix,
 					get_output_format_name(appconfig.output_format));
@@ -601,14 +588,13 @@ int main(int argc, char *argv[]) {
 			break;
 
 		case 'D' /* --device */ :
-			strncpy(hwconf.device, optarg, sizeof(hwconf.device) - 1);
-			hwconf.device[sizeof(hwconf.device) - 1] = '\0';
+			strncpy(appconfig.pcm_device, optarg, sizeof(appconfig.pcm_device) - 1);
 			break;
 		case 'C' /* --channels */ :
-			hwconf.channels = atoi(optarg);
+			appconfig.pcm_channels = abs(atoi(optarg));
 			break;
 		case 'R' /* --rate */ :
-			hwconf.rate = atoi(optarg);
+			appconfig.pcm_rate = abs(atoi(optarg));
 			break;
 
 		case 'p' /* --out-prefix */ :
@@ -656,49 +642,54 @@ int main(int argc, char *argv[]) {
 			return EXIT_FAILURE;
 		}
 
-	/* initialize reader structure */
-	hwreader.hw = &hwconf;
-	hwreader.handle = NULL;
-	pthread_mutex_init(&hwreader.mutex, NULL);
-	pthread_cond_init(&hwreader.ready, NULL);
-	hwreader.size = hwconf.channels * PROCESSING_FRAMES;
-	hwreader.buffer = (int16_t *)malloc(sizeof(int16_t) * hwreader.size);
-	hwreader.current = 0;
+	int status = EXIT_SUCCESS;
+	pthread_t thread_read_id;
+	pthread_t thread_process_id;
+	char *msg = NULL;
+	int err;
 
-	if (hwreader.buffer == NULL) {
+	/* initialize reader data */
+	pthread_mutex_init(&appconfig.mutex, NULL);
+	pthread_cond_init(&appconfig.ready, NULL);
+	appconfig.size = appconfig.pcm_channels * PROCESSING_FRAMES;
+	appconfig.buffer = (int16_t *)malloc(sizeof(int16_t) * appconfig.size);
+	appconfig.current = 0;
+
+	if (appconfig.buffer == NULL) {
 		fprintf(stderr, "error: failed to allocate memory for read buffer\n");
 		goto fail;
 	}
 
-	/* open audio device */
-	if ((rv = snd_pcm_open(&hwreader.handle, hwconf.device, SND_PCM_STREAM_CAPTURE, 0)) != 0) {
-		fprintf(stderr, "error: couldn't open PCM device: %s\n", snd_strerror(rv));
+	if ((err = snd_pcm_open(&appconfig.pcm, appconfig.pcm_device, SND_PCM_STREAM_CAPTURE, 0)) != 0) {
+		fprintf(stderr, "error: couldn't open PCM device: %s\n", snd_strerror(err));
 		goto fail;
 	}
 
-	/* set hardware parameters */
-	if (set_hwparams(hwreader.handle, &hwconf) < 0)
+	if ((err = set_hw_params(appconfig.pcm, &msg)) != 0) {
+		fprintf(stderr, "error: couldn't set HW parameters: %s\n", msg);
 		goto fail;
+	}
 
-	if ((rv = snd_pcm_prepare(hwreader.handle)) != 0) {
-		fprintf(stderr, "error: couldn't prepare PCM: %s\n", snd_strerror(rv));
+	if ((err = snd_pcm_prepare(appconfig.pcm)) != 0) {
+		fprintf(stderr, "error: couldn't prepare PCM: %s\n", snd_strerror(err));
 		goto fail;
 	}
 
 	if (appconfig.verbose)
-		print_audio_info(&hwconf);
+		print_audio_info();
 
 	struct sigaction sigact = { .sa_handler = main_loop_stop };
 	sigaction(SIGTERM, &sigact, NULL);
 	sigaction(SIGINT, &sigact, NULL);
 
 	/* initialize thread for audio capturing */
-	if (pthread_create(&thread_read_id, NULL, &reader_thread, &hwreader) != 0) {
+	if (pthread_create(&thread_read_id, NULL, &reader_thread, NULL) != 0) {
 		fprintf(stderr, "error: couldn't create input thread\n");
 		goto fail;
 	}
+
 	/* initialize thread for data processing */
-	if (pthread_create(&thread_process_id, NULL, &processing_thread, &hwreader) != 0) {
+	if (pthread_create(&thread_process_id, NULL, &processing_thread, NULL) != 0) {
 		fprintf(stderr, "error: couldn't create processing thread\n");
 		goto fail;
 	}
@@ -713,9 +704,9 @@ fail:
 	status = EXIT_FAILURE;
 
 success:
-	snd_pcm_close(hwreader.handle);
-	pthread_mutex_destroy(&hwreader.mutex);
-	pthread_cond_destroy(&hwreader.ready);
-	free(hwreader.buffer);
+	snd_pcm_close(appconfig.pcm);
+	pthread_mutex_destroy(&appconfig.mutex);
+	pthread_cond_destroy(&appconfig.ready);
+	free(appconfig.buffer);
 	return status;
 }
