@@ -268,12 +268,11 @@ static void *reader_thread(void *arg) {
 	while (main_loop_on) {
 		rd_len = snd_pcm_readi(appconfig.pcm, buffer, READER_FRAMES);
 
-		if (rd_len == -EPIPE) { /* buffer overrun (this should not happen) */
+		/* buffer overrun (this should not happen) */
+		if (rd_len == -EPIPE) {
 			snd_pcm_recover(appconfig.pcm, rd_len, 1);
-			if (appconfig.verbose) {
-				printf("warning: pcm_readi buffer overrun\n");
-				fflush(stdout);
-			}
+			if (appconfig.verbose)
+				warn("pcm_readi buffer overrun");
 			continue;
 		}
 
@@ -301,10 +300,8 @@ static void *reader_thread(void *arg) {
 			/* if this will happen, nothing is going to save us... */
 			if (appconfig.current == appconfig.size) {
 				appconfig.current = 0;
-				if (appconfig.verbose) {
-					printf("warning: reader buffer overrun\n");
-					fflush(stdout);
-				}
+				if (appconfig.verbose)
+					warn("reader buffer overrun");
 			}
 
 			/* NOTE: The size of data returned by the pcm_read in the blocking mode is
@@ -380,7 +377,7 @@ static void *processing_thread(void *arg) {
 		vorbis_comment_init(&vbs_c);
 		if (vorbis_encode_init(&vbs_i, appconfig.pcm_channels, appconfig.pcm_rate,
 				appconfig.bitrate_max, appconfig.bitrate_nom, appconfig.bitrate_min) < 0) {
-			fprintf(stderr, "error: invalid parameters for vorbis bit rate\n");
+			error("Invalid parameters for vorbis bit rate");
 			goto fail;
 		}
 		vorbis_comment_add(&vbs_c, "SVAR - Simple Voice Activated Recorder");
@@ -418,7 +415,7 @@ static void *processing_thread(void *arg) {
 					get_output_format_name(appconfig.output_format));
 
 			if (appconfig.verbose)
-				printf("info: creating new output file: %s\n", file_name);
+				info("Creating new output file: %s", file_name);
 
 			/* initialize new file for selected encoder */
 			switch (appconfig.output_format) {
@@ -427,7 +424,7 @@ static void *processing_thread(void *arg) {
 				if (sffp)
 					sf_close(sffp);
 				if ((sffp = sf_open(file_name, SFM_WRITE, &sfinfo)) == NULL) {
-					fprintf(stderr, "error: unable to create output file\n");
+					error("Unable to create output file");
 					goto fail;
 				}
 				break;
@@ -449,7 +446,7 @@ static void *processing_thread(void *arg) {
 				}
 
 				if ((fp = fopen(file_name, "w")) == NULL) {
-					fprintf(stderr, "error: unable to create output file\n");
+					error("Unable to create output file");
 					goto fail;
 				}
 
@@ -470,7 +467,7 @@ static void *processing_thread(void *arg) {
 				if (fp)
 					fclose(fp);
 				if ((fp = fopen(file_name, "w")) == NULL) {
-					fprintf(stderr, "error: unable to create output file\n");
+					error("Unable to create output file");
 					goto fail;
 				}
 			}
@@ -607,7 +604,7 @@ int main(int argc, char *argv[]) {
 					break;
 				}
 			if (i == sizeof(output_formats) / sizeof(*output_formats)) {
-				fprintf(stderr, "error: unknown output format [");
+				fprintf(stderr, "error: Unknown output format [");
 				for (i = 0; i < sizeof(output_formats) / sizeof(*output_formats); i++)
 					fprintf(stderr, "%s%s", i != 0 ? ", " : "", output_formats[i].name);
 				fprintf(stderr, "]: %s\n", optarg);
@@ -618,21 +615,21 @@ int main(int argc, char *argv[]) {
 		case 'l' /* --sig-level */ :
 			appconfig.threshold = atoi(optarg);
 			if (appconfig.threshold < 0 || appconfig.threshold > 100) {
-				fprintf(stderr, "error: signal level out of range [0, 100]: %d\n", appconfig.threshold);
+				error("Signal level out of range [0, 100]: %d", appconfig.threshold);
 				return EXIT_FAILURE;
 			}
 			break;
 		case 'f' /* --fadeout-lag */ :
 			appconfig.fadeout_time = atoi(optarg);
 			if (appconfig.fadeout_time < 100 || appconfig.fadeout_time > 1000000) {
-				fprintf(stderr, "error: fadeout lag out of range [100, 1000000]: %d\n", appconfig.fadeout_time);
+				error("Fadeout lag out of range [100, 1000000]: %d", appconfig.fadeout_time);
 				return EXIT_FAILURE;
 			}
 			break;
 		case 's' /* --split-time */ :
 			appconfig.split_time = atoi(optarg);
 			if (appconfig.split_time < 0 || appconfig.split_time > 1000000) {
-				fprintf(stderr, "error: split time out of range [0, 1000000]: %d\n", appconfig.split_time);
+				error("Split time out of range [0, 1000000]: %d", appconfig.split_time);
 				return EXIT_FAILURE;
 			}
 			break;
@@ -656,22 +653,22 @@ int main(int argc, char *argv[]) {
 	appconfig.current = 0;
 
 	if (appconfig.buffer == NULL) {
-		fprintf(stderr, "error: failed to allocate memory for read buffer\n");
+		error("Failed to allocate memory for read buffer");
 		goto fail;
 	}
 
 	if ((err = snd_pcm_open(&appconfig.pcm, appconfig.pcm_device, SND_PCM_STREAM_CAPTURE, 0)) != 0) {
-		fprintf(stderr, "error: couldn't open PCM device: %s\n", snd_strerror(err));
+		error("Couldn't open PCM device: %s", snd_strerror(err));
 		goto fail;
 	}
 
 	if ((err = set_hw_params(appconfig.pcm, &msg)) != 0) {
-		fprintf(stderr, "error: couldn't set HW parameters: %s\n", msg);
+		error("Couldn't set HW parameters: %s", msg);
 		goto fail;
 	}
 
 	if ((err = snd_pcm_prepare(appconfig.pcm)) != 0) {
-		fprintf(stderr, "error: couldn't prepare PCM: %s\n", snd_strerror(err));
+		error("Couldn't prepare PCM: %s", snd_strerror(err));
 		goto fail;
 	}
 
@@ -684,13 +681,13 @@ int main(int argc, char *argv[]) {
 
 	/* initialize thread for audio capturing */
 	if (pthread_create(&thread_read_id, NULL, &reader_thread, NULL) != 0) {
-		fprintf(stderr, "error: couldn't create input thread\n");
+		error("Couldn't create input thread");
 		goto fail;
 	}
 
 	/* initialize thread for data processing */
 	if (pthread_create(&thread_process_id, NULL, &processing_thread, NULL) != 0) {
-		fprintf(stderr, "error: couldn't create processing thread\n");
+		error("Couldn't create processing thread");
 		goto fail;
 	}
 
@@ -704,7 +701,8 @@ fail:
 	status = EXIT_FAILURE;
 
 success:
-	snd_pcm_close(appconfig.pcm);
+	if (appconfig.pcm != NULL)
+		snd_pcm_close(appconfig.pcm);
 	pthread_mutex_destroy(&appconfig.mutex);
 	pthread_cond_destroy(&appconfig.ready);
 	free(appconfig.buffer);
