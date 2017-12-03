@@ -99,6 +99,16 @@ static struct encoding_format_info_t appencoders[] = {
 	{ ENC_FORMAT_RAW, "raw" },
 };
 
+static bool main_loop_on = true;
+static void main_loop_stop(int sig) {
+	/* Call to this handler restores the default action, so on the
+	 * second call the program will be forcefully terminated. */
+
+	struct sigaction sigact = { .sa_handler = SIG_DFL };
+	sigaction(sig, &sigact, NULL);
+
+	main_loop_on = false;
+}
 
 /* Set hardware parameters. */
 static int set_hwparams(snd_pcm_t *handle, struct hwconfig_t *hwconf) {
@@ -176,19 +186,6 @@ static void print_audio_info(struct hwconfig_t *hwconf) {
 				appconfig.bitrate_max / 1000);
 }
 
-/* Setup Ctrl-C signal catch for application quit. */
-static int looop_mode;
-static void stop_loop_mode(int sig){
-	(void)sig;
-	looop_mode = 0;
-}
-
-static void setup_quit_sigaction() {
-	struct sigaction sigact = { .sa_handler = stop_loop_mode };
-	if (sigaction(SIGINT, &sigact, NULL) == -1)
-		perror("warning: Setting signal handler failed");
-}
-
 /* Calculate max peak and amplitude RMSD (based on all channels). */
 static void peak_check_S16_LE(const int16_t *buffer, int frames, int channels,
 		int16_t *peak, int16_t *rms) {
@@ -247,7 +244,7 @@ static void *reader_thread(void *ptr) {
 	struct timespec current_time;
 	struct timespec peak_time = { 0 };
 
-	while (looop_mode) {
+	while (main_loop_on) {
 		rd_len = snd_pcm_readi(data->handle, buffer, READER_FRAMES);
 
 		if (rd_len == -EPIPE) { /* buffer overrun (this should not happen) */
@@ -370,7 +367,7 @@ static void *processing_thread(void *ptr) {
 		/* it is not a failure, though, we just want to politely skip the loop */
 		goto fail;
 
-	while (looop_mode) {
+	while (main_loop_on) {
 
 		/* copy data from the reader buffer into our internal one */
 		pthread_mutex_lock(&data->mutex);
@@ -689,8 +686,9 @@ int main(int argc, char *argv[]) {
 	if (appconfig.verbose)
 		print_audio_info(&hwconf);
 
-	looop_mode = 1;
-	setup_quit_sigaction();
+	struct sigaction sigact = { .sa_handler = main_loop_stop };
+	sigaction(SIGTERM, &sigact, NULL);
+	sigaction(SIGINT, &sigact, NULL);
 
 	/* initialize thread for audio capturing */
 	if (pthread_create(&thread_read_id, NULL, &reader_thread, &hwreader) != 0) {
