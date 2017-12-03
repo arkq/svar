@@ -32,30 +32,39 @@
 #include "debug.h"
 
 
-enum encoding_format {
-	ENC_FORMAT_RAW = 0,
-	ENC_FORMAT_WAVE,
-	ENC_FORMAT_VORBIS,
+enum output_format {
+	FORMAT_RAW = 0,
+	FORMAT_WAVE,
+	FORMAT_OGG,
 };
 
-struct encoding_format_info_t {
-	enum encoding_format id;
-	char name[16];
+/* available output formats */
+static const struct {
+	enum output_format format;
+	const char *name;
+} output_formats[] = {
+	{ FORMAT_RAW, "raw" },
+#if ENABLE_SNDFILE
+	{ FORMAT_WAVE, "wav" },
+#endif
+#if ENABLE_VORBIS
+	{ FORMAT_OGG, "ogg" },
+#endif
 };
 
 struct appconfig_t {
-	char output_prefix[128];
 
 	/* if true, run signal meter only */
 	bool signal_meter;
 	/* if true, print debug messages */
 	bool verbose;
 
+	char output_prefix[128];
+	enum output_format output_format;
+
 	int threshold;    /* % of max signal */
 	int fadeout_time; /* in ms */
 	int split_time;   /* in s (0 disables split) */
-
-	enum encoding_format encoder;
 
 	/* variable bit rate settings for encoder (bit per second) */
 	int bitrate_min;
@@ -89,15 +98,6 @@ struct hwreader_t {
 
 /* global application settings */
 static struct appconfig_t appconfig;
-static struct encoding_format_info_t appencoders[] = {
-#if ENABLE_VORBIS
-	{ ENC_FORMAT_VORBIS, "ogg" },
-#endif
-#if ENABLE_SNDFILE
-	{ ENC_FORMAT_WAVE, "wav" },
-#endif
-	{ ENC_FORMAT_RAW, "raw" },
-};
 
 static bool main_loop_on = true;
 static void main_loop_stop(int sig) {
@@ -162,11 +162,11 @@ static int set_hwparams(snd_pcm_t *handle, struct hwconfig_t *hwconf) {
 }
 
 /* Return the name of a given output format. */
-static const char *get_encoder_name(enum encoding_format format) {
+static const char *get_output_format_name(enum output_format format) {
 	size_t i;
-	for (i = 0; i < sizeof(appencoders) / sizeof(struct encoding_format_info_t); i++)
-		if (appencoders[i].id == format)
-			return appencoders[i].name;
+	for (i = 0; i < sizeof(output_formats) / sizeof(*output_formats); i++)
+		if (output_formats[i].format == format)
+			return output_formats[i].name;
 	return NULL;
 }
 
@@ -178,8 +178,8 @@ static void print_audio_info(struct hwconfig_t *hwconf) {
 			hwconf->device, hwconf->rate,
 			snd_pcm_format_name(hwconf->format),
 			hwconf->channels, hwconf->channels > 1 ? "s" : "",
-			get_encoder_name(appconfig.encoder));
-	if (appconfig.encoder == ENC_FORMAT_VORBIS)
+			get_output_format_name(appconfig.output_format));
+	if (appconfig.output_format == FORMAT_OGG)
 		printf("  bitrates: %d, %d, %d kbit/s\n",
 				appconfig.bitrate_min / 1000,
 				appconfig.bitrate_nom / 1000,
@@ -351,7 +351,7 @@ static void *processing_thread(void *ptr) {
 	float **vorbis_buffer;
 	int fi, ci;
 
-	if (appconfig.encoder == ENC_FORMAT_VORBIS) {
+	if (appconfig.output_format == FORMAT_OGG) {
 		vorbis_info_init(&vbs_i);
 		vorbis_comment_init(&vbs_c);
 		if (vorbis_encode_init(&vbs_i, channels, data->hw->rate,
@@ -395,15 +395,15 @@ static void *processing_thread(void *ptr) {
 					appconfig.output_prefix,
 					tmp_tm_time.tm_mday, tmp_tm_time.tm_hour,
 					tmp_tm_time.tm_min, tmp_tm_time.tm_sec,
-					get_encoder_name(appconfig.encoder));
+					get_output_format_name(appconfig.output_format));
 
 			if (appconfig.verbose)
 				printf("info: creating new output file: %s\n", file_name);
 
 			/* initialize new file for selected encoder */
-			switch (appconfig.encoder) {
+			switch (appconfig.output_format) {
 #if ENABLE_SNDFILE
-			case ENC_FORMAT_WAVE:
+			case FORMAT_WAVE:
 				if (sffp)
 					sf_close(sffp);
 				if ((sffp = sf_open(file_name, SFM_WRITE, &sfinfo)) == NULL) {
@@ -414,7 +414,7 @@ static void *processing_thread(void *ptr) {
 
 #endif /* ENABLE_SNDFILE */
 #if ENABLE_VORBIS
-			case ENC_FORMAT_VORBIS:
+			case FORMAT_OGG:
 
 				if (fp) { /* close previously initialized file */
 
@@ -446,8 +446,7 @@ static void *processing_thread(void *ptr) {
 				break;
 
 #endif /* ENABLE_VORBIS */
-			case ENC_FORMAT_RAW:
-			default:
+			case FORMAT_RAW:
 				if (fp)
 					fclose(fp);
 				if ((fp = fopen(file_name, "w")) == NULL) {
@@ -458,14 +457,14 @@ static void *processing_thread(void *ptr) {
 		}
 
 		/* use selected encoder for data processing */
-		switch (appconfig.encoder) {
+		switch (appconfig.output_format) {
 #if ENABLE_SNDFILE
-		case ENC_FORMAT_WAVE:
+		case FORMAT_WAVE:
 			sf_writef_short(sffp, buffer, frames);
 			break;
 #endif /* ENABLE_SNDFILE */
 #if ENABLE_VORBIS
-		case ENC_FORMAT_VORBIS:
+		case FORMAT_OGG:
 			vorbis_buffer = vorbis_analysis_buffer(&vbs_d, frames);
 			/* convert ALSA buffer into the vorbis one */
 			for (fi = 0; fi < frames; fi++)
@@ -475,8 +474,7 @@ static void *processing_thread(void *ptr) {
 			do_analysis_and_write_ogg(&vbs_d, &vbs_b, &ogg_s, fp);
 			break;
 #endif /* ENABLE_VORBIS */
-		case ENC_FORMAT_RAW:
-		default:
+		case FORMAT_RAW:
 			fwrite(buffer, sizeof(int16_t) * channels, frames, fp);
 		}
 
@@ -485,15 +483,15 @@ static void *processing_thread(void *ptr) {
 fail:
 
 	/* clean up routines for selected encoder */
-	switch (appconfig.encoder) {
+	switch (appconfig.output_format) {
 #if ENABLE_SNDFILE
-	case ENC_FORMAT_WAVE:
+	case FORMAT_WAVE:
 		if (sffp)
 			sf_close(sffp);
 		break;
 #endif /* ENABLE_SNDFILE */
 #if ENABLE_VORBIS
-	case ENC_FORMAT_VORBIS:
+	case FORMAT_OGG:
 		if (fp) {
 			/* indicate end of data */
 			vorbis_analysis_wrote(&vbs_d, 0);
@@ -508,8 +506,7 @@ fail:
 		vorbis_info_clear(&vbs_i);
 		break;
 #endif /* ENABLE_VORBIS */
-	case ENC_FORMAT_RAW:
-	default:
+	case FORMAT_RAW:
 		if (fp)
 			fclose(fp);
 	}
@@ -541,7 +538,8 @@ int main(int argc, char *argv[]) {
 	struct hwconfig_t hwconf;
 	struct hwreader_t hwreader;
 	int status;
-	int rv, i;
+	size_t i;
+	int rv;
 
 	strcpy(appconfig.output_prefix, "rec");
 	appconfig.threshold = 2;
@@ -551,11 +549,11 @@ int main(int argc, char *argv[]) {
 
 	/* default audio encoder */
 #if ENABLE_SNDFILE
-	appconfig.encoder = ENC_FORMAT_WAVE;
+	appconfig.output_format = FORMAT_WAVE;
 #elif ENABLE_VORBIS
-	appconfig.encoder = ENC_FORMAT_VORBIS;
+	appconfig.output_format = FORMAT_OGG;
 #else
-	appconfig.encoder = ENC_FORMAT_RAW;
+	appconfig.output_format = FORMAT_RAW;
 #endif
 
 	/* default compression settings */
@@ -592,7 +590,7 @@ int main(int argc, char *argv[]) {
 					hwconf.device, hwconf.rate, hwconf.channels,
 					appconfig.threshold, appconfig.fadeout_time,
 					appconfig.split_time, appconfig.output_prefix,
-					get_encoder_name(appconfig.encoder));
+					get_output_format_name(appconfig.output_format));
 			return EXIT_SUCCESS;
 
 		case 'm' /* --sig-meter */ :
@@ -617,36 +615,40 @@ int main(int argc, char *argv[]) {
 			strncpy(appconfig.output_prefix, optarg, sizeof(appconfig.output_prefix) - 1);
 			break;
 		case 'o' /* --out-format */ :
-			for (i = 0; (size_t)i < sizeof(appencoders) / sizeof(struct encoding_format_info_t); i++)
-				if (strcasecmp(appencoders[i].name, optarg) == 0)
-					appconfig.encoder = appencoders[i].id;
-			if (i == sizeof(appencoders) / sizeof(struct encoding_format_info_t))
-				printf("warning: format not available, leaving default\n");
+			for (i = 0; i < sizeof(output_formats) / sizeof(*output_formats); i++)
+				if (strcasecmp(output_formats[i].name, optarg) == 0) {
+					appconfig.output_format = output_formats[i].format;
+					break;
+				}
+			if (i == sizeof(output_formats) / sizeof(*output_formats)) {
+				fprintf(stderr, "error: unknown output format [");
+				for (i = 0; i < sizeof(output_formats) / sizeof(*output_formats); i++)
+					fprintf(stderr, "%s%s", i != 0 ? ", " : "", output_formats[i].name);
+				fprintf(stderr, "]: %s\n", optarg);
+				return EXIT_FAILURE;
+			}
 			break;
 
 		case 'l' /* --sig-level */ :
-			rv = atoi(optarg);
-			if (rv < 0 || rv > 100)
-				printf("warning: sig-level out of range [0, 100] (%d),"
-						" leaving default\n", rv);
-			else
-				appconfig.threshold = rv;
+			appconfig.threshold = atoi(optarg);
+			if (appconfig.threshold < 0 || appconfig.threshold > 100) {
+				fprintf(stderr, "error: signal level out of range [0, 100]: %d\n", appconfig.threshold);
+				return EXIT_FAILURE;
+			}
 			break;
 		case 'f' /* --fadeout-lag */ :
-			rv = atoi(optarg);
-			if (rv < 100 || rv > 1000000)
-				printf("warning: fadeout-lag out of range [100, 1000000] (%d),"
-						" leaving default\n", rv);
-			else
-				appconfig.fadeout_time = rv;
+			appconfig.fadeout_time = atoi(optarg);
+			if (appconfig.fadeout_time < 100 || appconfig.fadeout_time > 1000000) {
+				fprintf(stderr, "error: fadeout lag out of range [100, 1000000]: %d\n", appconfig.fadeout_time);
+				return EXIT_FAILURE;
+			}
 			break;
 		case 's' /* --split-time */ :
-			rv = atoi(optarg);
-			if (rv < 0 || rv > 1000000)
-				printf("warning: split-time out of range [0, 1000000] (%d),"
-						" leaving default\n", rv);
-			else
-				appconfig.split_time = rv;
+			appconfig.split_time = atoi(optarg);
+			if (appconfig.split_time < 0 || appconfig.split_time > 1000000) {
+				fprintf(stderr, "error: split time out of range [0, 1000000]: %d\n", appconfig.split_time);
+				return EXIT_FAILURE;
+			}
 			break;
 
 		default:
