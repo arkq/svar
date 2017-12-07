@@ -1,11 +1,9 @@
-svar
-====
-
 SVAR - Simple Voice Activated Recorder
+======================================
 
 It is a simple console application (low memory footprint and CPU usage) designed for recording
 audio when a specified signal level is exceeded. It is commonly known solution called Voice
-Activated Recording (VAR). When the signal level is low for longer than the fadeout time, audio
+Operated Recording (VOR). When the signal level is low for longer than the fadeout time, audio
 recording is paused. Capturing the audio signal is based on the
 [ALSA](http://www.alsa-project.org/) technology, so it should work on all modern Linux systems.
 Currently this application supports three output formats:
