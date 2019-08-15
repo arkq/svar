@@ -1,6 +1,6 @@
 /*
  * SVAR - main.c
- * Copyright (c) 2010-2017 Arkadiusz Bokowy
+ * Copyright (c) 2010-2019 Arkadiusz Bokowy
  *
  * This file is a part of SVAR.
  *
@@ -12,6 +12,7 @@
 # include "config.h"
 #endif
 
+#include <errno.h>
 #include <getopt.h>
 #include <math.h>
 #include <pthread.h>
@@ -19,6 +20,9 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include <alsa/asoundlib.h>
@@ -57,6 +61,9 @@ static const struct {
 /* global application settings */
 static struct appconfig_t {
 
+	/* application banner */
+	char *banner;
+
 	/* capturing PCM device */
 	snd_pcm_t *pcm;
 	char pcm_device[25];
@@ -92,6 +99,8 @@ static struct appconfig_t {
 	int size;
 
 } appconfig = {
+
+	.banner = "SVAR - Simple Voice Activated Recorder",
 
 	.pcm_device = "default",
 	.pcm_format = SND_PCM_FORMAT_S16_LE,
@@ -225,13 +234,12 @@ static void peak_check_S16_LE(const int16_t *buffer, int frames, int channels,
 }
 
 #if ENABLE_VORBIS
-/* Compress and write stream to the OGG file. */
-static int do_analysis_and_write_ogg(vorbis_dsp_state *vd, vorbis_block *vb,
+static size_t do_analysis_and_write_ogg(vorbis_dsp_state *vd, vorbis_block *vb,
 		ogg_stream_state *os, FILE *fp) {
 
 	ogg_packet o_pack;
 	ogg_page o_page;
-	int wr_len = 0;
+	size_t wr_len = 0;
 
 	/* do main analysis and create packets */
 	while (vorbis_analysis_blockout(vd, vb) == 1) {
@@ -257,10 +265,10 @@ static int do_analysis_and_write_ogg(vorbis_dsp_state *vd, vorbis_block *vb,
 static void *reader_thread(void *arg) {
 	(void)arg;
 
-	int16_t *buffer = (int16_t *)malloc(sizeof(int16_t) * appconfig.pcm_channels * READER_FRAMES);
+	int16_t *buffer = malloc(sizeof(int16_t) * appconfig.pcm_channels * READER_FRAMES);
+	snd_pcm_sframes_t rd_len;
 	int16_t signal_peak;
-	int16_t signal_rmsd;
-	int rd_len;
+	int16_t signal_rms;
 
 	struct timespec current_time;
 	struct timespec peak_time = { 0 };
@@ -272,16 +280,16 @@ static void *reader_thread(void *arg) {
 		if (rd_len == -EPIPE) {
 			snd_pcm_recover(appconfig.pcm, rd_len, 1);
 			if (appconfig.verbose)
-				warn("pcm_readi buffer overrun");
+				warn("PCM buffer overrun");
 			continue;
 		}
 
-		peak_check_S16_LE(buffer, rd_len, appconfig.pcm_channels, &signal_peak, &signal_rmsd);
+		peak_check_S16_LE(buffer, rd_len, appconfig.pcm_channels, &signal_peak, &signal_rms);
 
 		if (appconfig.signal_meter) {
 			/* dump current peak and RMS values to the stdout */
-			printf("\rsignal peak [%%]: %3u, siganl RMS [%%]: %3u\r",
-					signal_peak * 100 / 0x7ffe, signal_rmsd * 100 / 0x7ffe);
+			printf("\rsignal peak [%%]: %3u, signal RMS [%%]: %3u\r",
+					signal_peak * 100 / 0x7ffe, signal_rms * 100 / 0x7ffe);
 			fflush(stdout);
 			continue;
 		}
@@ -301,7 +309,7 @@ static void *reader_thread(void *arg) {
 			if (appconfig.current == appconfig.size) {
 				appconfig.current = 0;
 				if (appconfig.verbose)
-					warn("reader buffer overrun");
+					warn("Reader buffer overrun");
 			}
 
 			/* NOTE: The size of data returned by the pcm_read in the blocking mode is
@@ -313,7 +321,7 @@ static void *reader_thread(void *arg) {
 			appconfig.current += rd_len * appconfig.pcm_channels;
 
 			/* dump reader buffer usage */
-			debug("buffer usage: %d of %d", appconfig.current, appconfig.size);
+			debug("Buffer usage: %d out of %d", appconfig.current, appconfig.size);
 
 			pthread_cond_broadcast(&appconfig.ready);
 			pthread_mutex_unlock(&appconfig.mutex);
@@ -338,7 +346,7 @@ static void *processing_thread(void *arg) {
 	if (appconfig.signal_meter)
 		return NULL;
 
-	int16_t *buffer = (int16_t *)malloc(sizeof(int16_t) * appconfig.pcm_channels * PROCESSING_FRAMES);
+	int16_t *buffer = malloc(sizeof(int16_t) * appconfig.pcm_channels * PROCESSING_FRAMES);
 	unsigned int frames;
 
 	struct timespec current_time;
@@ -348,6 +356,7 @@ static void *processing_thread(void *arg) {
 	int create_new_output = 1;
 	/* it must contain a prefix and the timestamp */
 	char file_name[192];
+	int rc;
 
 	FILE *fp = NULL;
 
@@ -358,7 +367,7 @@ static void *processing_thread(void *arg) {
 		.channels = appconfig.pcm_channels,
 		.samplerate = appconfig.pcm_rate,
 	};
-#endif
+#endif /* ENABLE_SNDFILE */
 
 #if ENABLE_VORBIS
 	ogg_stream_state ogg_s;
@@ -371,16 +380,15 @@ static void *processing_thread(void *arg) {
 	vorbis_comment vbs_c;
 	float **vorbis_buffer;
 	size_t fi, ci;
-
 	if (appconfig.output_format == FORMAT_OGG) {
 		vorbis_info_init(&vbs_i);
-		vorbis_comment_init(&vbs_c);
-		if (vorbis_encode_init(&vbs_i, appconfig.pcm_channels, appconfig.pcm_rate,
-				appconfig.bitrate_max, appconfig.bitrate_nom, appconfig.bitrate_min) < 0) {
-			error("Invalid parameters for vorbis bit rate");
+		if ((rc = vorbis_encode_init(&vbs_i, appconfig.pcm_channels, appconfig.pcm_rate,
+				appconfig.bitrate_max, appconfig.bitrate_nom, appconfig.bitrate_min)) != 0) {
+			error("Couldn't initialize Vorbis endoder: %d", rc);
 			goto fail;
 		}
-		vorbis_comment_add(&vbs_c, "SVAR - Simple Voice Activated Recorder");
+		vorbis_comment_init(&vbs_c);
+		vorbis_comment_add(&vbs_c, appconfig.banner);
 	}
 #endif /* ENABLE_VORBIS */
 
@@ -419,26 +427,28 @@ static void *processing_thread(void *arg) {
 
 			/* initialize new file for selected encoder */
 			switch (appconfig.output_format) {
+
 #if ENABLE_SNDFILE
 			case FORMAT_WAVE:
-				if (sffp)
+
+				if (sffp != NULL)
 					sf_close(sffp);
+
 				if ((sffp = sf_open(file_name, SFM_WRITE, &sfinfo)) == NULL) {
-					error("Unable to create output file");
+					error("Couldn't create output file: %s", sf_strerror(NULL));
 					goto fail;
 				}
+
 				break;
 
 #endif /* ENABLE_SNDFILE */
+
 #if ENABLE_VORBIS
 			case FORMAT_OGG:
 
-				if (fp) { /* close previously initialized file */
-
-					/* indicate end of data */
+				if (fp != NULL) { /* close previously initialized file */
 					vorbis_analysis_wrote(&vbs_d, 0);
 					do_analysis_and_write_ogg(&vbs_d, &vbs_b, &ogg_s, fp);
-
 					ogg_stream_clear(&ogg_s);
 					vorbis_block_clear(&vbs_b);
 					vorbis_dsp_clear(&vbs_d);
@@ -446,31 +456,35 @@ static void *processing_thread(void *arg) {
 				}
 
 				if ((fp = fopen(file_name, "w")) == NULL) {
-					error("Unable to create output file");
+					error("Couldn't create output file: %s", strerror(errno));
 					goto fail;
 				}
 
-				/* initialize varbis analyzer every new OGG file */
+				/* initialize vorbis analyzer */
 				vorbis_analysis_init(&vbs_d, &vbs_i);
 				vorbis_block_init(&vbs_d, &vbs_b);
 				ogg_stream_init(&ogg_s, current_time.tv_sec);
 
-				/* write three header packets to the OGG stream */
+				/* write header packets to the OGG stream */
 				vorbis_analysis_headerout(&vbs_d, &vbs_c, &ogg_p_main, &ogg_p_comm, &ogg_p_code);
 				ogg_stream_packetin(&ogg_s, &ogg_p_main);
 				ogg_stream_packetin(&ogg_s, &ogg_p_comm);
 				ogg_stream_packetin(&ogg_s, &ogg_p_code);
+
 				break;
 
 #endif /* ENABLE_VORBIS */
+
 			case FORMAT_RAW:
-				if (fp)
+				if (fp != NULL)
 					fclose(fp);
 				if ((fp = fopen(file_name, "w")) == NULL) {
-					error("Unable to create output file");
+					error("Couldn't create output file: %s", strerror(errno));
 					goto fail;
 				}
+
 			}
+
 		}
 
 		/* use selected encoder for data processing */
@@ -503,17 +517,15 @@ fail:
 	switch (appconfig.output_format) {
 #if ENABLE_SNDFILE
 	case FORMAT_WAVE:
-		if (sffp)
+		if (sffp != NULL)
 			sf_close(sffp);
 		break;
 #endif /* ENABLE_SNDFILE */
 #if ENABLE_VORBIS
 	case FORMAT_OGG:
-		if (fp) {
-			/* indicate end of data */
+		if (fp != NULL) {
 			vorbis_analysis_wrote(&vbs_d, 0);
 			do_analysis_and_write_ogg(&vbs_d, &vbs_b, &ogg_s, fp);
-
 			ogg_stream_clear(&ogg_s);
 			vorbis_block_clear(&vbs_b);
 			vorbis_dsp_clear(&vbs_d);
@@ -524,7 +536,7 @@ fail:
 		break;
 #endif /* ENABLE_VORBIS */
 	case FORMAT_RAW:
-		if (fp)
+		if (fp != NULL)
 			fclose(fp);
 	}
 
@@ -552,14 +564,14 @@ int main(int argc, char *argv[]) {
 		{0, 0, 0, 0},
 	};
 
-	/* print application banner, just for the lulz */
-	printf("SVAR - Simple Voice Activated Recorder\n");
+	/* print application banner */
+	printf("%s\n", appconfig.banner);
 
 	/* arguments parser */
 	while ((opt = getopt_long(argc, argv, opts, longopts, NULL)) != -1)
 		switch (opt) {
 		case 'h' /* --help */ :
-			printf("usage: svar [options]\n"
+			printf("usage: %s [options]\n"
 					"  -h, --help\t\t\tprint recipe for a delicious cake\n"
 					"  -D DEV, --device=DEV\t\tselect audio input device (current: %s)\n"
 					"  -R NN, --rate=NN\t\tset sample rate (current: %u)\n"
@@ -571,6 +583,7 @@ int main(int argc, char *argv[]) {
 					"  -o FMT, --out-format=FMT\toutput file format (current: %s)\n"
 					"  -m, --sig-meter\t\taudio signal level meter\n"
 					"  -v, --verbose\t\t\tprint some extra information\n",
+					argv[0],
 					appconfig.pcm_device, appconfig.pcm_rate, appconfig.pcm_channels,
 					appconfig.threshold, appconfig.fadeout_time,
 					appconfig.split_time, appconfig.output_prefix,
@@ -649,7 +662,7 @@ int main(int argc, char *argv[]) {
 	pthread_mutex_init(&appconfig.mutex, NULL);
 	pthread_cond_init(&appconfig.ready, NULL);
 	appconfig.size = appconfig.pcm_channels * PROCESSING_FRAMES;
-	appconfig.buffer = (int16_t *)malloc(sizeof(int16_t) * appconfig.size);
+	appconfig.buffer = malloc(sizeof(int16_t) * appconfig.size);
 	appconfig.current = 0;
 
 	if (appconfig.buffer == NULL) {
