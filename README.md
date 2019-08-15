@@ -6,15 +6,18 @@ audio when a specified signal level is exceeded. It is commonly known solution c
 Operated Recording (VOR). When the signal level is low for longer than the fadeout time, audio
 recording is paused. Capturing the audio signal is based on the
 [ALSA](http://www.alsa-project.org/) technology, so it should work on all modern Linux systems.
-Currently this application supports three output formats:
-RAW (PCM 16bit interlaced),
-WAV ([libsndfile](http://www.mega-nerd.com/libsndfile/)) and
-variable bitrate OGG ([libvorbis](http://www.xiph.org/vorbis/)).
-However, for low CPU consumption WAV is recommended - it is the default selection.
+
+Currently this application supports four output formats:
+- RAW (PCM 16bit interleaved)
+- WAV ([libsndfile](http://www.mega-nerd.com/libsndfile/))
+- MP3 ([mp3lame](http://lame.sourceforge.net/))
+- OGG ([libvorbis](http://www.xiph.org/vorbis/))
+
+For low CPU consumption WAV is recommended - it is the default selection.
 
 There is also possible to split output file into chunks containing continuous recording. New
 output file is generated every time a new signal appears (after the split time period). In such a
-case, the time of signal appearance can be determined by the timestap attached to the output file
+case, the time of signal appearance can be determined by the timestamp attached to the output file
 name. The timestamp is in the following format: DD-HH:MM:SS.
 
 For the fine adjustment of the activation condition (the signal level), one can run svar with the
@@ -27,5 +30,5 @@ Installation
 
 	$ autoreconf --install
 	$ mkdir build && cd build
-	$ ../configure --enable-sndfile --enable-vorbis
+	$ ../configure --enable-sndfile --enable-mp3lame --enable-vorbis
 	$ make && make install
