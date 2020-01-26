@@ -45,6 +45,7 @@ target_link_libraries(svar PkgConfig::ALSA)
 
 if(ENABLE_SNDFILE)
 	pkg_check_modules(SNDFile REQUIRED IMPORTED_TARGET sndfile)
+	target_sources(svar PRIVATE src/writer_sndfile.c)
 	target_link_libraries(svar PkgConfig::SNDFile)
 endif()
 

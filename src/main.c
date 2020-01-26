@@ -1,6 +1,6 @@
 /*
  * SVAR - main.c
- * Copyright (c) 2010-2019 Arkadiusz Bokowy
+ * Copyright (c) 2010-2020 Arkadiusz Bokowy
  *
  * This file is a part of SVAR.
  *
@@ -30,7 +30,7 @@
 # include <lame/lame.h>
 #endif
 #if ENABLE_SNDFILE
-# include <sndfile.h>
+# include "writer_sndfile.h"
 #endif
 #if ENABLE_VORBIS
 # include <vorbis/vorbisenc.h>
@@ -43,7 +43,7 @@
 
 enum output_format {
 	FORMAT_RAW = 0,
-	FORMAT_WAVE,
+	FORMAT_WAV,
 	FORMAT_MP3,
 	FORMAT_OGG,
 };
@@ -58,7 +58,7 @@ static const struct {
 	{ FORMAT_MP3, "mp3" },
 #endif
 #if ENABLE_SNDFILE
-	{ FORMAT_WAVE, "wav" },
+	{ FORMAT_WAV, "wav" },
 #endif
 #if ENABLE_VORBIS
 	{ FORMAT_OGG, "ogg" },
@@ -121,7 +121,7 @@ static struct appconfig_t {
 	.output_prefix = "rec",
 	/* default output format */
 #if ENABLE_SNDFILE
-	.output_format = FORMAT_WAVE,
+	.output_format = FORMAT_WAV,
 #elif ENABLE_VORBIS
 	.output_format = FORMAT_OGG,
 #elif ENABLE_MP3LAME
@@ -379,13 +379,15 @@ static void *processing_thread(void *arg) {
 	FILE *fp = NULL;
 
 #if ENABLE_SNDFILE
-	SNDFILE *sffp = NULL;
-	SF_INFO sfinfo = {
-		.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16,
-		.channels = appconfig.pcm_channels,
-		.samplerate = appconfig.pcm_rate,
-	};
-#endif /* ENABLE_SNDFILE */
+	struct writer_sndfile *writer_sndfile = NULL;
+	if (appconfig.output_format == FORMAT_WAV) {
+		if ((writer_sndfile = writer_sndfile_init(appconfig.pcm_channels, appconfig.pcm_rate,
+						SF_FORMAT_WAV | SF_FORMAT_PCM_16)) == NULL) {
+			error("Couldn't initialize sndfile writer: %s", strerror(errno));
+			exit(EXIT_FAILURE);
+		}
+	}
+#endif
 
 #if ENABLE_MP3LAME
 	lame_t lame_handle = NULL;
@@ -478,19 +480,12 @@ static void *processing_thread(void *arg) {
 			switch (appconfig.output_format) {
 
 #if ENABLE_SNDFILE
-			case FORMAT_WAVE:
-
-				if (sffp != NULL)
-					sf_close(sffp);
-
-				if ((sffp = sf_open(file_name, SFM_WRITE, &sfinfo)) == NULL) {
-					error("Couldn't create output file: %s", sf_strerror(NULL));
-					goto fail;
-				}
-
-				break;
-
-#endif /* ENABLE_SNDFILE */
+			case FORMAT_WAV:
+				if (writer_sndfile_open(writer_sndfile, file_name) != -1)
+					break;
+				error("Couldn't open sndfile writer: %s", strerror(errno));
+				goto fail;
+#endif
 
 #if ENABLE_MP3LAME
 			case FORMAT_MP3:
@@ -561,10 +556,10 @@ static void *processing_thread(void *arg) {
 		/* use selected encoder for data processing */
 		switch (appconfig.output_format) {
 #if ENABLE_SNDFILE
-		case FORMAT_WAVE:
-			sf_writef_short(sffp, buffer, frames);
+		case FORMAT_WAV:
+			writer_sndfile_write(writer_sndfile, buffer, frames);
 			break;
-#endif /* ENABLE_SNDFILE */
+#endif
 #if ENABLE_MP3LAME
 		case FORMAT_MP3:
 			rc = lame_encode(lame_handle, buffer, frames, lame_mp3buf, sizeof(lame_mp3buf));
@@ -593,11 +588,10 @@ fail:
 	/* clean up routines for selected encoder */
 	switch (appconfig.output_format) {
 #if ENABLE_SNDFILE
-	case FORMAT_WAVE:
-		if (sffp != NULL)
-			sf_close(sffp);
+	case FORMAT_WAV:
+		writer_sndfile_free(writer_sndfile);
 		break;
-#endif /* ENABLE_SNDFILE */
+#endif
 #if ENABLE_MP3LAME
 	case FORMAT_MP3:
 		if (fp) {
