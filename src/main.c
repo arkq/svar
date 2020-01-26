@@ -123,7 +123,7 @@ static struct appconfig_t {
 #if ENABLE_SNDFILE
 	.output_format = FORMAT_WAVE,
 #elif ENABLE_VORBIS
-	.output_format = FORMAT_VORBIS,
+	.output_format = FORMAT_OGG,
 #elif ENABLE_MP3LAME
 	.output_format = FORMAT_MP3,
 #else

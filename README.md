@@ -28,7 +28,6 @@ packed (time of tenth of the second).
 Installation
 ------------
 
-	$ autoreconf --install
 	$ mkdir build && cd build
-	$ ../configure --enable-sndfile --enable-mp3lame --enable-vorbis
+	$ cmake .. -DENABLE_SNDFILE=ON -DENABLE_MP3LAME=ON -DENABLE_VORBIS=ON
 	$ make && make install
