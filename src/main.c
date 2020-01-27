@@ -27,7 +27,7 @@
 
 #include <alsa/asoundlib.h>
 #if ENABLE_MP3LAME
-# include <lame/lame.h>
+# include "writer_mp3lame.h"
 #endif
 #if ENABLE_SNDFILE
 # include "writer_sndfile.h"
@@ -81,8 +81,8 @@ static struct appconfig_t {
 
 	/* if true, run signal meter only */
 	bool signal_meter;
-	/* if true, print debug messages */
-	bool verbose;
+	/* output verboseness level */
+	int verbose;
 
 	char output_prefix[128];
 	enum output_format output_format;
@@ -116,7 +116,7 @@ static struct appconfig_t {
 	.pcm_rate = 44100,
 
 	.signal_meter = false,
-	.verbose = false,
+	.verbose = 0,
 
 	.output_prefix = "rec",
 	/* default output format */
@@ -217,8 +217,12 @@ static void print_audio_info(void) {
 	if (!appconfig.signal_meter)
 		printf("Output file format: %s\n",
 				get_output_format_name(appconfig.output_format));
+	if (appconfig.output_format == FORMAT_MP3)
+		printf("Output bit rate [min, max]: %d, %d kbit/s\n",
+				appconfig.bitrate_min / 1000,
+				appconfig.bitrate_max / 1000);
 	if (appconfig.output_format == FORMAT_OGG)
-		printf("  bitrates: %d, %d, %d kbit/s\n",
+		printf("Output bit rate [min, nominal, max]: %d, %d, %d kbit/s\n",
 				appconfig.bitrate_min / 1000,
 				appconfig.bitrate_nom / 1000,
 				appconfig.bitrate_max / 1000);
@@ -241,15 +245,6 @@ static void peak_check_S16_LE(const int16_t *buffer, int frames, int channels,
 	}
 	*rms = sqrt(sum2 / frames);
 }
-
-#if ENABLE_MP3LAME
-static int lame_encode(lame_global_flags *gfp, short int *buffer, int samples,
-		unsigned char *mp3buf, int mp3buf_size) {
-	if (appconfig.pcm_channels == 1)
-		return lame_encode_buffer(gfp, buffer, NULL, samples, mp3buf, mp3buf_size);
-	return lame_encode_buffer_interleaved(gfp, buffer, samples, mp3buf, mp3buf_size);
-}
-#endif /* ENABLE_MP3LAME */
 
 #if ENABLE_VORBIS
 static size_t do_analysis_and_write_ogg(vorbis_dsp_state *vd, vorbis_block *vb,
@@ -390,33 +385,15 @@ static void *processing_thread(void *arg) {
 #endif
 
 #if ENABLE_MP3LAME
-	lame_t lame_handle = NULL;
-	unsigned char lame_mp3buf[1024 * 64];
+	struct writer_mp3lame *writer_mp3lame = NULL;
 	if (appconfig.output_format == FORMAT_MP3) {
-		if ((lame_handle = lame_init()) == NULL) {
-			error("Couldn't initialize LAME encoder: %s", strerror(errno));
-			goto fail;
+		if ((writer_mp3lame = writer_mp3lame_init(appconfig.pcm_channels, appconfig.pcm_rate,
+						appconfig.bitrate_min, appconfig.bitrate_max, appconfig.banner)) == NULL) {
+			error("Couldn't initialize mp3lame writer: %s", strerror(errno));
+			exit(EXIT_FAILURE);
 		}
-		if (lame_set_num_channels(lame_handle, appconfig.pcm_channels) != 0) {
-			error("LAME: Unsupported number of channels: %d", appconfig.pcm_channels);
-			goto fail;
-		}
-		if (lame_set_in_samplerate(lame_handle, appconfig.pcm_rate) != 0) {
-			error("LAME: Unsupported sampling rate: %d", appconfig.pcm_rate);
-			goto fail;
-		}
-		lame_set_VBR(lame_handle, vbr_default);
-		lame_set_VBR_min_bitrate_kbps(lame_handle, appconfig.bitrate_min);
-		lame_set_VBR_max_bitrate_kbps(lame_handle, appconfig.bitrate_max);
-		lame_set_write_id3tag_automatic(lame_handle, 0);
-		if (lame_init_params(lame_handle) != 0) {
-			error("LAME: Couldn't setup encoder");
-			goto fail;
-		}
-		id3tag_init(lame_handle);
-		id3tag_set_comment(lame_handle, appconfig.banner);
-		if (appconfig.verbose)
-			lame_print_internals(lame_handle);
+		if (appconfig.verbose >= 2)
+			lame_print_internals(writer_mp3lame->gfp);
 	}
 #endif
 
@@ -489,25 +466,11 @@ static void *processing_thread(void *arg) {
 
 #if ENABLE_MP3LAME
 			case FORMAT_MP3:
-
-				if (fp) { /* close previously initialized file */
-					rc = lame_encode(lame_handle, buffer, frames, lame_mp3buf, sizeof(lame_mp3buf));
-					fwrite(lame_mp3buf, 1, rc, fp);
-					rc = lame_encode_flush(lame_handle, lame_mp3buf, sizeof(lame_mp3buf));
-					fwrite(lame_mp3buf, 1, rc, fp);
-					fclose(fp);
-				}
-
-				if ((fp = fopen(file_name, "w")) == NULL) {
-					error("Unable to create output file");
-					goto fail;
-				}
-
-				rc = lame_get_id3v2_tag(lame_handle, lame_mp3buf, sizeof(lame_mp3buf));
-				fwrite(lame_mp3buf, 1, rc, fp);
-
-				break;
-#endif /* ENABLE_MP3LAME */
+				if (writer_mp3lame_open(writer_mp3lame, file_name) != -1)
+					break;
+				error("Couldn't open mp3lame writer: %s", strerror(errno));
+				goto fail;
+#endif
 
 #if ENABLE_VORBIS
 			case FORMAT_OGG:
@@ -562,10 +525,9 @@ static void *processing_thread(void *arg) {
 #endif
 #if ENABLE_MP3LAME
 		case FORMAT_MP3:
-			rc = lame_encode(lame_handle, buffer, frames, lame_mp3buf, sizeof(lame_mp3buf));
-			fwrite(lame_mp3buf, 1, rc, fp);
+			writer_mp3lame_write(writer_mp3lame, buffer, frames);
 			break;
-#endif /* ENABLE_MP3LAME */
+#endif
 #if ENABLE_VORBIS
 		case FORMAT_OGG:
 			vorbis_buffer = vorbis_analysis_buffer(&vbs_d, frames);
@@ -594,16 +556,9 @@ fail:
 #endif
 #if ENABLE_MP3LAME
 	case FORMAT_MP3:
-		if (fp) {
-			rc = lame_encode(lame_handle, buffer, frames, lame_mp3buf, sizeof(lame_mp3buf));
-			fwrite(lame_mp3buf, 1, rc, fp);
-			rc = lame_encode_flush(lame_handle, lame_mp3buf, sizeof(lame_mp3buf));
-			fwrite(lame_mp3buf, 1, rc, fp);
-			fclose(fp);
-		}
-		lame_close(lame_handle);
+		writer_mp3lame_free(writer_mp3lame);
 		break;
-#endif /* ENABLE_MP3LAME */
+#endif
 #if ENABLE_VORBIS
 	case FORMAT_OGG:
 		if (fp != NULL) {
@@ -677,7 +632,7 @@ int main(int argc, char *argv[]) {
 			appconfig.signal_meter = true;
 			break;
 		case 'v' /* --verbose */ :
-			appconfig.verbose = true;
+			appconfig.verbose++;
 			break;
 
 		case 'D' /* --device */ :

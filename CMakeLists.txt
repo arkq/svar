@@ -51,6 +51,7 @@ endif()
 
 if(ENABLE_MP3LAME)
 	find_package(Mp3Lame REQUIRED)
+	target_sources(svar PRIVATE src/writer_mp3lame.c)
 	target_link_libraries(svar Mp3Lame::Mp3Lame)
 endif()
 

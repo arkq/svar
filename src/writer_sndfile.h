@@ -11,6 +11,7 @@
 #ifndef SVAR_WRITER_SNDFILE_H_
 #define SVAR_WRITER_SNDFILE_H_
 
+#include <stdint.h>
 #include <sndfile.h>
 
 struct writer_sndfile {
