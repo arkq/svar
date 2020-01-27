@@ -33,7 +33,7 @@
 # include "writer_sndfile.h"
 #endif
 #if ENABLE_VORBIS
-# include <vorbis/vorbisenc.h>
+# include "writer_vorbis.h"
 #endif
 
 #include "debug.h"
@@ -246,34 +246,6 @@ static void peak_check_S16_LE(const int16_t *buffer, int frames, int channels,
 	*rms = sqrt(sum2 / frames);
 }
 
-#if ENABLE_VORBIS
-static size_t do_analysis_and_write_ogg(vorbis_dsp_state *vd, vorbis_block *vb,
-		ogg_stream_state *os, FILE *fp) {
-
-	ogg_packet o_pack;
-	ogg_page o_page;
-	size_t wr_len = 0;
-
-	/* do main analysis and create packets */
-	while (vorbis_analysis_blockout(vd, vb) == 1) {
-		vorbis_analysis(vb, NULL);
-		vorbis_bitrate_addblock(vb);
-
-		while (vorbis_bitrate_flushpacket(vd, &o_pack)) {
-			ogg_stream_packetin(os, &o_pack);
-
-			/* form OGG pages and write it to output file */
-			while (ogg_stream_pageout(os, &o_page)) {
-				wr_len += fwrite(o_page.header, 1, o_page.header_len, fp);
-				wr_len += fwrite(o_page.body, 1, o_page.body_len, fp);
-			}
-		}
-	}
-
-	return wr_len;
-}
-#endif
-
 /* Audio signal data reader thread. */
 static void *reader_thread(void *arg) {
 	(void)arg;
@@ -369,7 +341,6 @@ static void *processing_thread(void *arg) {
 	int create_new_output = 1;
 	/* it must contain a prefix and the timestamp */
 	char file_name[192];
-	int rc;
 
 	FILE *fp = NULL;
 
@@ -398,27 +369,16 @@ static void *processing_thread(void *arg) {
 #endif
 
 #if ENABLE_VORBIS
-	ogg_stream_state ogg_s;
-	ogg_packet ogg_p_main;
-	ogg_packet ogg_p_comm;
-	ogg_packet ogg_p_code;
-	vorbis_info vbs_i;
-	vorbis_dsp_state vbs_d;
-	vorbis_block vbs_b;
-	vorbis_comment vbs_c;
-	float **vorbis_buffer;
-	size_t fi, ci;
+	struct writer_vorbis *writer_vorbis = NULL;
 	if (appconfig.output_format == FORMAT_OGG) {
-		vorbis_info_init(&vbs_i);
-		if ((rc = vorbis_encode_init(&vbs_i, appconfig.pcm_channels, appconfig.pcm_rate,
-				appconfig.bitrate_max, appconfig.bitrate_nom, appconfig.bitrate_min)) != 0) {
-			error("Couldn't initialize Vorbis endoder: %d", rc);
-			goto fail;
+		if ((writer_vorbis = writer_vorbis_init(appconfig.pcm_channels, appconfig.pcm_rate,
+						appconfig.bitrate_min, appconfig.bitrate_nom, appconfig.bitrate_max,
+						appconfig.banner)) == NULL) {
+			error("Couldn't initialize vorbis writer: %s", strerror(errno));
+			exit(EXIT_FAILURE);
 		}
-		vorbis_comment_init(&vbs_c);
-		vorbis_comment_add(&vbs_c, appconfig.banner);
 	}
-#endif /* ENABLE_VORBIS */
+#endif
 
 	while (main_loop_on) {
 
@@ -455,7 +415,6 @@ static void *processing_thread(void *arg) {
 
 			/* initialize new file for selected encoder */
 			switch (appconfig.output_format) {
-
 #if ENABLE_SNDFILE
 			case FORMAT_WAV:
 				if (writer_sndfile_open(writer_sndfile, file_name) != -1)
@@ -463,7 +422,6 @@ static void *processing_thread(void *arg) {
 				error("Couldn't open sndfile writer: %s", strerror(errno));
 				goto fail;
 #endif
-
 #if ENABLE_MP3LAME
 			case FORMAT_MP3:
 				if (writer_mp3lame_open(writer_mp3lame, file_name) != -1)
@@ -471,47 +429,20 @@ static void *processing_thread(void *arg) {
 				error("Couldn't open mp3lame writer: %s", strerror(errno));
 				goto fail;
 #endif
-
 #if ENABLE_VORBIS
 			case FORMAT_OGG:
-
-				if (fp != NULL) { /* close previously initialized file */
-					vorbis_analysis_wrote(&vbs_d, 0);
-					do_analysis_and_write_ogg(&vbs_d, &vbs_b, &ogg_s, fp);
-					ogg_stream_clear(&ogg_s);
-					vorbis_block_clear(&vbs_b);
-					vorbis_dsp_clear(&vbs_d);
-					fclose(fp);
-				}
-
-				if ((fp = fopen(file_name, "w")) == NULL) {
-					error("Couldn't create output file: %s", strerror(errno));
-					goto fail;
-				}
-
-				/* initialize vorbis analyzer */
-				vorbis_analysis_init(&vbs_d, &vbs_i);
-				vorbis_block_init(&vbs_d, &vbs_b);
-				ogg_stream_init(&ogg_s, current_time.tv_sec);
-
-				/* write header packets to the OGG stream */
-				vorbis_analysis_headerout(&vbs_d, &vbs_c, &ogg_p_main, &ogg_p_comm, &ogg_p_code);
-				ogg_stream_packetin(&ogg_s, &ogg_p_main);
-				ogg_stream_packetin(&ogg_s, &ogg_p_comm);
-				ogg_stream_packetin(&ogg_s, &ogg_p_code);
-
-				break;
-
-#endif /* ENABLE_VORBIS */
-
+				if (writer_vorbis_open(writer_vorbis, file_name) != -1)
+					break;
+				error("Couldn't open vorbis writer: %s", strerror(errno));
+				goto fail;
+#endif
 			case FORMAT_RAW:
 				if (fp != NULL)
 					fclose(fp);
-				if ((fp = fopen(file_name, "w")) == NULL) {
-					error("Couldn't create output file: %s", strerror(errno));
-					goto fail;
-				}
-
+				if ((fp = fopen(file_name, "w")) != NULL)
+					break;
+				error("Couldn't create output file: %s", strerror(errno));
+				goto fail;
 			}
 
 		}
@@ -530,15 +461,9 @@ static void *processing_thread(void *arg) {
 #endif
 #if ENABLE_VORBIS
 		case FORMAT_OGG:
-			vorbis_buffer = vorbis_analysis_buffer(&vbs_d, frames);
-			/* convert ALSA buffer into the vorbis one */
-			for (fi = 0; fi < frames; fi++)
-				for (ci = 0; ci < appconfig.pcm_channels; ci++)
-					vorbis_buffer[ci][fi] = (float)(buffer[fi * appconfig.pcm_channels + ci]) / 0x7ffe;
-			vorbis_analysis_wrote(&vbs_d, frames);
-			do_analysis_and_write_ogg(&vbs_d, &vbs_b, &ogg_s, fp);
+			writer_vorbis_write(writer_vorbis, buffer, frames);
 			break;
-#endif /* ENABLE_VORBIS */
+#endif
 		case FORMAT_RAW:
 			fwrite(buffer, sizeof(int16_t) * appconfig.pcm_channels, frames, fp);
 		}
@@ -561,18 +486,9 @@ fail:
 #endif
 #if ENABLE_VORBIS
 	case FORMAT_OGG:
-		if (fp != NULL) {
-			vorbis_analysis_wrote(&vbs_d, 0);
-			do_analysis_and_write_ogg(&vbs_d, &vbs_b, &ogg_s, fp);
-			ogg_stream_clear(&ogg_s);
-			vorbis_block_clear(&vbs_b);
-			vorbis_dsp_clear(&vbs_d);
-			fclose(fp);
-		}
-		vorbis_comment_clear(&vbs_c);
-		vorbis_info_clear(&vbs_i);
+		writer_vorbis_free(writer_vorbis);
 		break;
-#endif /* ENABLE_VORBIS */
+#endif
 	case FORMAT_RAW:
 		if (fp != NULL)
 			fclose(fp);

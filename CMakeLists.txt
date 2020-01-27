@@ -57,6 +57,7 @@ endif()
 
 if(ENABLE_VORBIS)
 	pkg_check_modules(VorbisOgg REQUIRED IMPORTED_TARGET vorbis vorbisenc ogg)
+	target_sources(svar PRIVATE src/writer_vorbis.c)
 	target_link_libraries(svar PkgConfig::VorbisOgg)
 endif()
 
