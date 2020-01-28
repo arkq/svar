@@ -18,6 +18,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -74,8 +75,6 @@ static struct appconfig_t {
 	/* capturing PCM device */
 	snd_pcm_t *pcm;
 	char pcm_device[25];
-	snd_pcm_format_t pcm_format;
-	snd_pcm_access_t pcm_access;
 	unsigned int pcm_channels;
 	unsigned int pcm_rate;
 
@@ -101,17 +100,15 @@ static struct appconfig_t {
 	pthread_cond_t ready;
 	int16_t *buffer;
 	/* current position */
-	int current;
+	size_t current;
 	/* buffer size */
-	int size;
+	size_t size;
 
 } appconfig = {
 
 	.banner = "SVAR - Simple Voice Activated Recorder",
 
 	.pcm_device = "default",
-	.pcm_format = SND_PCM_FORMAT_S16_LE,
-	.pcm_access = SND_PCM_ACCESS_RW_INTERLEAVED,
 	.pcm_channels = 1,
 	.pcm_rate = 44100,
 
@@ -166,14 +163,14 @@ static int set_hw_params(snd_pcm_t *pcm, char **msg) {
 		snprintf(buf, sizeof(buf), "Set all possible ranges: %s", snd_strerror(err));
 		goto fail;
 	}
-	if ((err = snd_pcm_hw_params_set_access(pcm, params, appconfig.pcm_access)) != 0) {
+	if ((err = snd_pcm_hw_params_set_access(pcm, params, SND_PCM_ACCESS_RW_INTERLEAVED)) != 0) {
 		snprintf(buf, sizeof(buf), "Set assess type: %s: %s",
-				snd_strerror(err), snd_pcm_access_name(appconfig.pcm_access));
+				snd_strerror(err), snd_pcm_access_name(SND_PCM_ACCESS_RW_INTERLEAVED));
 		goto fail;
 	}
-	if ((err = snd_pcm_hw_params_set_format(pcm, params, appconfig.pcm_format)) != 0) {
+	if ((err = snd_pcm_hw_params_set_format(pcm, params, SND_PCM_FORMAT_S16_LE)) != 0) {
 		snprintf(buf, sizeof(buf), "Set format: %s: %s",
-				snd_strerror(err), snd_pcm_format_name(appconfig.pcm_format));
+				snd_strerror(err), snd_pcm_format_name(SND_PCM_FORMAT_S16_LE));
 		goto fail;
 	}
 	if ((err = snd_pcm_hw_params_set_channels_near(pcm, params, &appconfig.pcm_channels)) != 0) {
@@ -212,7 +209,7 @@ static void print_audio_info(void) {
 			"Hardware parameters: %iHz, %s, %i channel%s\n",
 			appconfig.pcm_device,
 			appconfig.pcm_rate,
-			snd_pcm_format_name(appconfig.pcm_format),
+			snd_pcm_format_name(SND_PCM_FORMAT_S16_LE),
 			appconfig.pcm_channels, appconfig.pcm_channels > 1 ? "s" : "");
 	if (!appconfig.signal_meter)
 		printf("Output file format: %s\n",
@@ -229,16 +226,17 @@ static void print_audio_info(void) {
 }
 
 /* Calculate max peak and amplitude RMSD (based on all channels). */
-static void peak_check_S16_LE(const int16_t *buffer, int frames, int channels,
+static void peak_check_S16_LE(const int16_t *buffer, size_t frames, int channels,
 		int16_t *peak, int16_t *rms) {
-	const int size = frames * channels;
+
+	const size_t size = frames * channels;
 	int16_t abslvl;
 	int64_t sum2;
-	int x;
+	size_t x;
 
 	*peak = 0;
 	for (x = sum2 = 0; x < size; x++) {
-		abslvl = abs(((int16_t *)buffer)[x]);
+		abslvl = abs(buffer[x]);
 		if (*peak < abslvl)
 			*peak = abslvl;
 		sum2 += abslvl * abslvl;
@@ -332,13 +330,13 @@ static void *processing_thread(void *arg) {
 		return NULL;
 
 	int16_t *buffer = malloc(sizeof(int16_t) * appconfig.pcm_channels * PROCESSING_FRAMES);
-	unsigned int frames = 0;
+	size_t frames = 0;
 
 	struct timespec current_time;
 	struct timespec previous_time = { 0 };
 	struct tm tmp_tm_time;
 	time_t tmp_t_time;
-	int create_new_output = 1;
+	bool create_new_output = true;
 	/* it must contain a prefix and the timestamp */
 	char file_name[192];
 
@@ -395,12 +393,12 @@ static void *processing_thread(void *arg) {
 		clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
 		if (appconfig.split_time &&
 				(current_time.tv_sec - previous_time.tv_sec) > appconfig.split_time)
-			create_new_output = 1;
+			create_new_output = true;
 		memcpy(&previous_time, &current_time, sizeof(previous_time));
 
 		/* create new output file if needed */
 		if (create_new_output) {
-			create_new_output = 0;
+			create_new_output = false;
 
 			tmp_t_time = time(NULL);
 			localtime_r(&tmp_t_time, &tmp_tm_time);
