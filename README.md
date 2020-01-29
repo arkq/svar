@@ -4,8 +4,12 @@ SVAR - Simple Voice Activated Recorder
 It is a simple console application (low memory footprint and CPU usage) designed for recording
 audio when a specified signal level is exceeded. It is commonly known solution called Voice
 Operated Recording (VOR). When the signal level is low for longer than the fadeout time, audio
-recording is paused. Capturing the audio signal is based on the
-[ALSA](http://www.alsa-project.org/) technology, so it should work on all modern Linux systems.
+recording is paused.
+
+On Linux systems, capturing the audio signal is based on the [ALSA](http://www.alsa-project.org/)
+technology. For all other systems, [PortAudio](http://www.portaudio.com/) library will be used.
+Alternatively, it is possible to force PortAudio back-end on Linux systems by adding
+`-DENABLE_PORTAUDIO=ON` to the CMake configuration step.
 
 Currently this application supports four output formats:
 - RAW (PCM 16bit interleaved)

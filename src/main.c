@@ -26,7 +26,12 @@
 #include <sys/time.h>
 #include <time.h>
 
-#include <alsa/asoundlib.h>
+#if ENABLE_PORTAUDIO
+# include <portaudio.h>
+#else
+# include <alsa/asoundlib.h>
+#endif
+
 #if ENABLE_MP3LAME
 # include "writer_mp3lame.h"
 #endif
@@ -73,8 +78,8 @@ static struct appconfig_t {
 	char *banner;
 
 	/* capturing PCM device */
-	snd_pcm_t *pcm;
 	char pcm_device[25];
+	int pcm_device_id;
 	unsigned int pcm_channels;
 	unsigned int pcm_rate;
 
@@ -109,6 +114,7 @@ static struct appconfig_t {
 	.banner = "SVAR - Simple Voice Activated Recorder",
 
 	.pcm_device = "default",
+	.pcm_device_id = 0,
 	.pcm_channels = 1,
 	.pcm_rate = 44100,
 
@@ -149,8 +155,9 @@ static void main_loop_stop(int sig) {
 	main_loop_on = false;
 }
 
-/* Set hardware parameters. */
-static int set_hw_params(snd_pcm_t *pcm, char **msg) {
+#if !ENABLE_PORTAUDIO
+/* Set ALSA hardware parameters. */
+static int pcm_set_hw_params(snd_pcm_t *pcm, char **msg) {
 
 	snd_pcm_hw_params_t *params;
 	char buf[256];
@@ -193,6 +200,7 @@ fail:
 		*msg = strdup(buf);
 	return err;
 }
+#endif
 
 /* Return the name of a given output format. */
 static const char *get_output_format_name(enum output_format format) {
@@ -206,10 +214,9 @@ static const char *get_output_format_name(enum output_format format) {
 /* Print some information about the audio device and its configuration. */
 static void print_audio_info(void) {
 	printf("Selected PCM device: %s\n"
-			"Hardware parameters: %iHz, %s, %i channel%s\n",
+			"Hardware parameters: %d Hz, S16LE, %d channel%s\n",
 			appconfig.pcm_device,
 			appconfig.pcm_rate,
-			snd_pcm_format_name(SND_PCM_FORMAT_S16_LE),
 			appconfig.pcm_channels, appconfig.pcm_channels > 1 ? "s" : "");
 	if (!appconfig.signal_meter)
 		printf("Output file format: %s\n",
@@ -225,7 +232,26 @@ static void print_audio_info(void) {
 				appconfig.bitrate_max / 1000);
 }
 
-/* Calculate max peak and amplitude RMSD (based on all channels). */
+#if ENABLE_PORTAUDIO
+static void pa_list_devices(void) {
+
+	PaDeviceIndex count = Pa_GetDeviceCount();
+	unsigned int len = ceil(log10(count));
+	const PaDeviceInfo *info;
+	PaDeviceIndex i;
+
+	printf(" %*s:\t%s\n", 1 + len, "ID", "Name");
+	for (i = 0; i < count; i++) {
+		if ((info = Pa_GetDeviceInfo(i))->maxInputChannels > 0)
+			printf(" %c%*d:\t%s\n",
+					i == appconfig.pcm_device_id ? '*' : ' ',
+					len, i, info->name);
+	}
+
+}
+#endif
+
+/* Calculate max peak and amplitude RMS (based on all channels). */
 static void peak_check_S16_LE(const int16_t *buffer, size_t frames, int channels,
 		int16_t *peak, int16_t *rms) {
 
@@ -241,86 +267,110 @@ static void peak_check_S16_LE(const int16_t *buffer, size_t frames, int channels
 			*peak = abslvl;
 		sum2 += abslvl * abslvl;
 	}
-	*rms = sqrt(sum2 / frames);
+
+	*rms = sqrt((double)sum2 / frames);
 }
 
-/* Audio signal data reader thread. */
-static void *reader_thread(void *arg) {
-	(void)arg;
+/* Process incoming audio frames. */
+static void process_audio_S16_LE(const int16_t *buffer, size_t frames, int channels) {
 
-	int16_t *buffer = malloc(sizeof(int16_t) * appconfig.pcm_channels * READER_FRAMES);
-	snd_pcm_sframes_t rd_len;
+	static struct timespec peak_time = { 0 };
+	struct timespec current_time;
+
 	int16_t signal_peak;
 	int16_t signal_rms;
 
-	struct timespec current_time;
-	struct timespec peak_time = { 0 };
+	peak_check_S16_LE(buffer, frames, channels, &signal_peak, &signal_rms);
 
-	while (main_loop_on) {
-		rd_len = snd_pcm_readi(appconfig.pcm, buffer, READER_FRAMES);
-
-		/* buffer overrun (this should not happen) */
-		if (rd_len == -EPIPE) {
-			snd_pcm_recover(appconfig.pcm, rd_len, 1);
-			if (appconfig.verbose)
-				warn("PCM buffer overrun");
-			continue;
-		}
-
-		peak_check_S16_LE(buffer, rd_len, appconfig.pcm_channels, &signal_peak, &signal_rms);
-
-		if (appconfig.signal_meter) {
-			/* dump current peak and RMS values to the stdout */
-			printf("\rsignal peak [%%]: %3u, signal RMS [%%]: %3u\r",
-					signal_peak * 100 / 0x7ffe, signal_rms * 100 / 0x7ffe);
-			fflush(stdout);
-			continue;
-		}
-
-		/* if the max peak in the buffer is greater than the threshold, update
-		 * the last peak time */
-		if ((int)signal_peak * 100 / 0x7ffe > appconfig.threshold)
-			clock_gettime(CLOCK_MONOTONIC_RAW, &peak_time);
-
-		clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
-		if ((current_time.tv_sec - peak_time.tv_sec) * 1000 +
-				(current_time.tv_nsec - peak_time.tv_nsec) / 1000000 < appconfig.fadeout_time) {
-
-			pthread_mutex_lock(&appconfig.mutex);
-
-			/* if this will happen, nothing is going to save us... */
-			if (appconfig.current == appconfig.size) {
-				appconfig.current = 0;
-				if (appconfig.verbose)
-					warn("Reader buffer overrun");
-			}
-
-			/* NOTE: The size of data returned by the pcm_read in the blocking mode is
-			 *       always equal to the requested size. So, if the reader buffer (the
-			 *       external one) is an integer multiplication of our internal buffer,
-			 *       there is no need for any fancy boundary check. However, this might
-			 *       not be true if someone is using CPU profiling tool, like cpulimit. */
-			memcpy(&appconfig.buffer[appconfig.current], buffer, sizeof(int16_t) * rd_len * appconfig.pcm_channels);
-			appconfig.current += rd_len * appconfig.pcm_channels;
-
-			/* dump reader buffer usage */
-			debug("Buffer usage: %d out of %d", appconfig.current, appconfig.size);
-
-			pthread_cond_broadcast(&appconfig.ready);
-			pthread_mutex_unlock(&appconfig.mutex);
-
-		}
+	if (appconfig.signal_meter) {
+		/* dump current peak and RMS values to the stdout */
+		printf("\rsignal peak [%%]: %3u, signal RMS [%%]: %3u\r",
+				signal_peak * 100 / 0x7ffe, signal_rms * 100 / 0x7ffe);
+		fflush(stdout);
+		return;
 	}
 
-	if (appconfig.signal_meter)
-		printf("\n");
+	/* if the max peak in the buffer is greater than the threshold, update
+	 * the last peak time */
+	if ((int)signal_peak * 100 / 0x7ffe > appconfig.threshold)
+		clock_gettime(CLOCK_MONOTONIC_RAW, &peak_time);
 
-	/* avoid dead-lock on the condition wait during the exit */
-	pthread_cond_broadcast(&appconfig.ready);
+	clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
+	if ((current_time.tv_sec - peak_time.tv_sec) * 1000 +
+			(current_time.tv_nsec - peak_time.tv_nsec) / 1000000 < appconfig.fadeout_time) {
+
+		pthread_mutex_lock(&appconfig.mutex);
+
+		/* if this will happen, nothing is going to save us... */
+		if (appconfig.current == appconfig.size) {
+			appconfig.current = 0;
+			if (appconfig.verbose)
+				warn("Reader buffer overrun");
+		}
+
+		/* NOTE: The size of data returned by the pcm_read in the blocking mode is
+		 *       always equal to the requested size. So, if the reader buffer (the
+		 *       external one) is an integer multiplication of our internal buffer,
+		 *       there is no need for any fancy boundary check. However, this might
+		 *       not be true if someone is using CPU profiling tool, like cpulimit. */
+		memcpy(&appconfig.buffer[appconfig.current], buffer,
+				sizeof(int16_t) * frames * appconfig.pcm_channels);
+		appconfig.current += frames * appconfig.pcm_channels;
+
+		/* dump reader buffer usage */
+		debug("Buffer usage: %zd out of %zd", appconfig.current, appconfig.size);
+
+		pthread_cond_signal(&appconfig.ready);
+		pthread_mutex_unlock(&appconfig.mutex);
+
+	}
+
+}
+
+#if ENABLE_PORTAUDIO
+
+/* Callback function for PortAudio capture. */
+static int pa_capture_callback(const void *inputBuffer, void *outputBuffer,
+		unsigned long framesPerBuffer, const PaStreamCallbackTimeInfo* timeInfo,
+		PaStreamCallbackFlags statusFlags, void *userData) {
+	(void)outputBuffer;
+	(void)timeInfo;
+	(void)statusFlags;
+	(void)userData;
+	process_audio_S16_LE(inputBuffer, framesPerBuffer, appconfig.pcm_channels);
+	return main_loop_on ? paContinue : paComplete;
+}
+
+#else
+
+/* Thread function for ALSA capture. */
+static void *alsa_capture_thread(void *arg) {
+
+	int16_t *buffer = malloc(sizeof(int16_t) * appconfig.pcm_channels * READER_FRAMES);
+	snd_pcm_sframes_t frames;
+	snd_pcm_t *pcm = arg;
+
+	while (main_loop_on) {
+		if ((frames = snd_pcm_readi(pcm, buffer, READER_FRAMES)) < 0)
+			switch (frames) {
+			case -EPIPE:
+			case -ESTRPIPE:
+				snd_pcm_recover(pcm, frames, 1);
+				if (appconfig.verbose)
+					warn("PCM buffer overrun: %s", snd_strerror(frames));
+				continue;
+			default:
+				error("PCM read error: %s", snd_strerror(frames));
+				continue;
+			}
+		process_audio_S16_LE(buffer, frames, appconfig.pcm_channels);
+	}
 
 	free(buffer);
-	return 0;
+	return NULL;
 }
+
+#endif
 
 /* Audio signal data processing thread. */
 static void *processing_thread(void *arg) {
@@ -402,7 +452,7 @@ static void *processing_thread(void *arg) {
 
 			tmp_t_time = time(NULL);
 			localtime_r(&tmp_t_time, &tmp_tm_time);
-			sprintf(file_name, "%s-%02d-%02d:%02d:%02d.%s",
+			snprintf(file_name, sizeof(file_name), "%s-%02d-%02d:%02d:%02d.%s",
 					appconfig.output_prefix,
 					tmp_tm_time.tm_mday, tmp_tm_time.tm_hour,
 					tmp_tm_time.tm_min, tmp_tm_time.tm_sec,
@@ -500,10 +550,12 @@ int main(int argc, char *argv[]) {
 
 	int opt;
 	size_t i;
-	const char *opts = "hvmD:R:C:l:f:o:p:s:";
+	const char *opts = "hVvLD:R:C:l:f:o:p:s:m";
 	const struct option longopts[] = {
 		{"help", no_argument, NULL, 'h'},
+		{"version", no_argument, NULL, 'V'},
 		{"verbose", no_argument, NULL, 'v'},
+		{"list-devices", no_argument, NULL, 'L'},
 		{"device", required_argument, NULL, 'D'},
 		{"channels", required_argument, NULL, 'C'},
 		{"rate", required_argument, NULL, 'R'},
@@ -516,8 +568,15 @@ int main(int argc, char *argv[]) {
 		{0, 0, 0, 0},
 	};
 
-	/* print application banner */
-	printf("%s\n", appconfig.banner);
+#if ENABLE_PORTAUDIO
+	PaError pa_err;
+	if ((pa_err = Pa_Initialize()) != paNoError) {
+		error("Couldn't initialize PortAudio: %s", Pa_GetErrorText(pa_err));
+		return EXIT_FAILURE;
+	}
+	if ((appconfig.pcm_device_id = Pa_GetDefaultInputDevice()) == paNoDevice)
+		warn("Couldn't get default input PortAudio device");
+#endif
 
 	/* arguments parser */
 	while ((opt = getopt_long(argc, argv, opts, longopts, NULL)) != -1)
@@ -525,7 +584,14 @@ int main(int argc, char *argv[]) {
 		case 'h' /* --help */ :
 			printf("usage: %s [options]\n"
 					"  -h, --help\t\t\tprint recipe for a delicious cake\n"
+					"  -V, --version\t\t\tprint version number and exit\n"
+					"  -v, --verbose\t\t\tprint some extra information\n"
+#if ENABLE_PORTAUDIO
+					"  -L, --list-devices\t\tlist available audio input devices\n"
+					"  -D ID, --device=ID\t\tselect audio input device (current: %d)\n"
+#else
 					"  -D DEV, --device=DEV\t\tselect audio input device (current: %s)\n"
+#endif
 					"  -R NN, --rate=NN\t\tset sample rate (current: %u)\n"
 					"  -C NN, --channels=NN\t\tspecify number of channels (current: %u)\n"
 					"  -l NN, --sig-level=NN\t\tactivation signal threshold (current: %u)\n"
@@ -533,13 +599,21 @@ int main(int argc, char *argv[]) {
 					"  -s NN, --split-time=NN\tsplit output file time in s (current: %d)\n"
 					"  -p STR, --out-prefix=STR\toutput file prefix (current: %s)\n"
 					"  -o FMT, --out-format=FMT\toutput file format (current: %s)\n"
-					"  -m, --sig-meter\t\taudio signal level meter\n"
-					"  -v, --verbose\t\t\tprint some extra information\n",
+					"  -m, --sig-meter\t\taudio signal level meter\n",
 					argv[0],
-					appconfig.pcm_device, appconfig.pcm_rate, appconfig.pcm_channels,
+#if ENABLE_PORTAUDIO
+					appconfig.pcm_device_id,
+#else
+					appconfig.pcm_device,
+#endif
+					appconfig.pcm_rate, appconfig.pcm_channels,
 					appconfig.threshold, appconfig.fadeout_time,
 					appconfig.split_time, appconfig.output_prefix,
 					get_output_format_name(appconfig.output_format));
+			return EXIT_SUCCESS;
+
+		case 'V' /* --version */ :
+			printf("%s\n", PROJECT_VERSION);
 			return EXIT_SUCCESS;
 
 		case 'm' /* --sig-meter */ :
@@ -549,9 +623,19 @@ int main(int argc, char *argv[]) {
 			appconfig.verbose++;
 			break;
 
-		case 'D' /* --device */ :
+#if ENABLE_PORTAUDIO
+		case 'L' /* --list-devices */ :
+			pa_list_devices();
+			return EXIT_SUCCESS;
+		case 'D' /* --device=ID */ :
+			appconfig.pcm_device_id = atoi(optarg);
+			break;
+#else
+		case 'D' /* --device=DEV */ :
 			strncpy(appconfig.pcm_device, optarg, sizeof(appconfig.pcm_device) - 1);
 			break;
+#endif
+
 		case 'C' /* --channels */ :
 			appconfig.pcm_channels = abs(atoi(optarg));
 			break;
@@ -604,10 +688,13 @@ int main(int argc, char *argv[]) {
 			return EXIT_FAILURE;
 		}
 
-	int status = EXIT_SUCCESS;
-	pthread_t thread_read_id;
+	/* print application banner */
+	printf("%s\n", appconfig.banner);
+
+#if !ENABLE_PORTAUDIO
+	pthread_t thread_alsa_capture_id;
+#endif
 	pthread_t thread_process_id;
-	char *msg = NULL;
 	int err;
 
 	/* initialize reader data */
@@ -619,23 +706,47 @@ int main(int argc, char *argv[]) {
 
 	if (appconfig.buffer == NULL) {
 		error("Failed to allocate memory for read buffer");
-		goto fail;
+		return EXIT_FAILURE;
 	}
 
-	if ((err = snd_pcm_open(&appconfig.pcm, appconfig.pcm_device, SND_PCM_STREAM_CAPTURE, 0)) != 0) {
+#if ENABLE_PORTAUDIO
+
+	PaStream *pa_stream = NULL;
+	PaStreamParameters pa_params = {
+		.sampleFormat = paInt16,
+		.device = appconfig.pcm_device_id,
+		.channelCount = appconfig.pcm_channels,
+		.suggestedLatency = Pa_GetDeviceInfo(appconfig.pcm_device_id)->defaultLowInputLatency,
+		.hostApiSpecificStreamInfo = NULL,
+	};
+
+	if ((pa_err = Pa_OpenStream(&pa_stream, &pa_params, NULL, appconfig.pcm_rate,
+					READER_FRAMES, paClipOff, pa_capture_callback, NULL)) != paNoError) {
+		error("Couldn't open PortAudio stream: %s", Pa_GetErrorText(pa_err));
+		return EXIT_FAILURE;
+	}
+
+#else
+
+	snd_pcm_t *pcm;
+	char *msg;
+
+	if ((err = snd_pcm_open(&pcm, appconfig.pcm_device, SND_PCM_STREAM_CAPTURE, 0)) != 0) {
 		error("Couldn't open PCM device: %s", snd_strerror(err));
-		goto fail;
+		return EXIT_FAILURE;
 	}
 
-	if ((err = set_hw_params(appconfig.pcm, &msg)) != 0) {
+	if ((err = pcm_set_hw_params(pcm, &msg)) != 0) {
 		error("Couldn't set HW parameters: %s", msg);
-		goto fail;
+		return EXIT_FAILURE;
 	}
 
-	if ((err = snd_pcm_prepare(appconfig.pcm)) != 0) {
+	if ((err = snd_pcm_prepare(pcm)) != 0) {
 		error("Couldn't prepare PCM: %s", snd_strerror(err));
-		goto fail;
+		return EXIT_FAILURE;
 	}
+
+#endif
 
 	if (appconfig.verbose)
 		print_audio_info();
@@ -644,32 +755,41 @@ int main(int argc, char *argv[]) {
 	sigaction(SIGTERM, &sigact, NULL);
 	sigaction(SIGINT, &sigact, NULL);
 
-	/* initialize thread for audio capturing */
-	if (pthread_create(&thread_read_id, NULL, &reader_thread, NULL) != 0) {
-		error("Couldn't create input thread");
-		goto fail;
+#if ENABLE_PORTAUDIO
+	if ((pa_err = Pa_StartStream(pa_stream)) != paNoError) {
+		error("Couldn't start PortAudio stream: %s", Pa_GetErrorText(pa_err));
+		return EXIT_FAILURE;
 	}
+#else
+	if ((err = pthread_create(&thread_alsa_capture_id, NULL, &alsa_capture_thread, pcm)) != 0) {
+		error("Couldn't create ALSA capture thread: %s", strerror(-err));
+		return EXIT_FAILURE;
+	}
+#endif
 
 	/* initialize thread for data processing */
-	if (pthread_create(&thread_process_id, NULL, &processing_thread, NULL) != 0) {
-		error("Couldn't create processing thread");
-		goto fail;
+	if ((err = pthread_create(&thread_process_id, NULL, &processing_thread, NULL)) != 0) {
+		error("Couldn't create processing thread: %s", strerror(-err));
+		return EXIT_FAILURE;
 	}
 
-	pthread_join(thread_read_id, NULL);
+#if ENABLE_PORTAUDIO
+	while ((pa_err = Pa_IsStreamActive(pa_stream)) == 1)
+		Pa_Sleep(1000);
+	if (pa_err < 0) {
+		error("Couldn't check PortAudio activity: %s", Pa_GetErrorText(pa_err));
+		return EXIT_FAILURE;
+	}
+#else
+	pthread_join(thread_alsa_capture_id, NULL);
+#endif
+
+	/* avoid dead-lock on the condition wait */
+	pthread_cond_signal(&appconfig.ready);
 	pthread_join(thread_process_id, NULL);
 
-	status = EXIT_SUCCESS;
-	goto success;
+	if (appconfig.signal_meter)
+		printf("\n");
 
-fail:
-	status = EXIT_FAILURE;
-
-success:
-	if (appconfig.pcm != NULL)
-		snd_pcm_close(appconfig.pcm);
-	pthread_mutex_destroy(&appconfig.mutex);
-	pthread_cond_destroy(&appconfig.ready);
-	free(appconfig.buffer);
-	return status;
+	return EXIT_SUCCESS;
 }

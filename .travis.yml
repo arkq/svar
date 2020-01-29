@@ -1,0 +1,23 @@
+sudo: false
+dist: xenial
+
+language: c
+
+addons:
+  apt:
+    packages:
+      - libasound2-dev
+      - libmp3lame-dev
+      - libsndfile1-dev
+      - libvorbis-dev
+      - portaudio19-dev
+
+before_script:
+  - mkdir build && cd build
+
+script:
+  - cmake .. && make
+  - cmake .. -DCMAKE_BUILD_TYPE=Debug && make
+  - cmake .. -DCMAKE_BUILD_TYPE=Release && make
+  - cmake .. -DENABLE_SNDFILE=ON -DENABLE_MP3LAME=ON -DENABLE_VORBIS=ON && make
+  - cmake .. -DENABLE_PORTAUDIO=ON && make

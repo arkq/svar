@@ -3,6 +3,8 @@
 find_path(LAME_INCLUDE_DIR lame/lame.h)
 find_library(LAME_LIBRARIES NAMES mp3lame)
 
+mark_as_advanced(LAME_INCLUDE_DIR)
+
 if(LAME_INCLUDE_DIR AND LAME_LIBRARIES)
 
 	add_library(Mp3Lame::Mp3Lame INTERFACE IMPORTED)
