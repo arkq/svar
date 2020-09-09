@@ -88,7 +88,9 @@ static struct appconfig_t {
 	/* output verboseness level */
 	int verbose;
 
-	char output_prefix[128];
+	/* strftime() format for output file */
+	const char *output;
+
 	enum output_format output_format;
 
 	int threshold;    /* % of max signal */
@@ -121,7 +123,9 @@ static struct appconfig_t {
 	.signal_meter = false,
 	.verbose = 0,
 
-	.output_prefix = "rec",
+	/* strftime() format string for output file */
+	.output = "rec-%d-%H:%M:%S",
+
 	/* default output format */
 #if ENABLE_SNDFILE
 	.output_format = FORMAT_WAV,
@@ -388,7 +392,8 @@ static void *processing_thread(void *arg) {
 	time_t tmp_t_time;
 	bool create_new_output = true;
 	/* it must contain a prefix and the timestamp */
-	char file_name[192];
+	char file_name_tmp[192];
+	char file_name[192 + 4];
 
 	FILE *fp = NULL;
 
@@ -452,11 +457,10 @@ static void *processing_thread(void *arg) {
 
 			tmp_t_time = time(NULL);
 			localtime_r(&tmp_t_time, &tmp_tm_time);
-			snprintf(file_name, sizeof(file_name), "%s-%02d-%02d:%02d:%02d.%s",
-					appconfig.output_prefix,
-					tmp_tm_time.tm_mday, tmp_tm_time.tm_hour,
-					tmp_tm_time.tm_min, tmp_tm_time.tm_sec,
-					get_output_format_name(appconfig.output_format));
+
+			strftime(file_name_tmp, sizeof(file_name_tmp), appconfig.output, &tmp_tm_time);
+			snprintf(file_name, sizeof(file_name), "%s.%s",
+					file_name_tmp, get_output_format_name(appconfig.output_format));
 
 			if (appconfig.verbose)
 				info("Creating new output file: %s", file_name);
@@ -550,7 +554,7 @@ int main(int argc, char *argv[]) {
 
 	int opt;
 	size_t i;
-	const char *opts = "hVvLD:R:C:l:f:o:p:s:m";
+	const char *opts = "hVvLD:R:C:l:f:o:s:m";
 	const struct option longopts[] = {
 		{"help", no_argument, NULL, 'h'},
 		{"version", no_argument, NULL, 'V'},
@@ -562,7 +566,6 @@ int main(int argc, char *argv[]) {
 		{"sig-level", required_argument, NULL, 'l'},
 		{"fadeout-lag", required_argument, NULL, 'f'},
 		{"out-format", required_argument, NULL, 'o'},
-		{"out-prefix", required_argument, NULL, 'p'},
 		{"split-time", required_argument, NULL, 's'},
 		{"sig-meter", no_argument, NULL, 'm'},
 		{0, 0, 0, 0},
@@ -582,7 +585,9 @@ int main(int argc, char *argv[]) {
 	while ((opt = getopt_long(argc, argv, opts, longopts, NULL)) != -1)
 		switch (opt) {
 		case 'h' /* --help */ :
-			printf("usage: %s [options]\n"
+			printf("Usage:\n"
+					"  %s [options] [output-template]\n"
+					"\nOptions:\n"
 					"  -h, --help\t\t\tprint recipe for a delicious cake\n"
 					"  -V, --version\t\t\tprint version number and exit\n"
 					"  -v, --verbose\t\t\tprint some extra information\n"
@@ -597,19 +602,25 @@ int main(int argc, char *argv[]) {
 					"  -l NN, --sig-level=NN\t\tactivation signal threshold (current: %u)\n"
 					"  -f NN, --fadeout-lag=NN\tfadeout time lag in ms (current: %u)\n"
 					"  -s NN, --split-time=NN\tsplit output file time in s (current: %d)\n"
-					"  -p STR, --out-prefix=STR\toutput file prefix (current: %s)\n"
 					"  -o FMT, --out-format=FMT\toutput file format (current: %s)\n"
-					"  -m, --sig-meter\t\taudio signal level meter\n",
+					"  -m, --sig-meter\t\taudio signal level meter\n"
+					"\n"
+					"The output-template argument is a strftime(3) format string which\n"
+					"will be used for creating output file name. If not specified, the\n"
+					"default value is: %s + extension\n",
 					argv[0],
 #if ENABLE_PORTAUDIO
 					appconfig.pcm_device_id,
 #else
 					appconfig.pcm_device,
 #endif
-					appconfig.pcm_rate, appconfig.pcm_channels,
-					appconfig.threshold, appconfig.fadeout_time,
-					appconfig.split_time, appconfig.output_prefix,
-					get_output_format_name(appconfig.output_format));
+					appconfig.pcm_rate,
+					appconfig.pcm_channels,
+					appconfig.threshold,
+					appconfig.fadeout_time,
+					appconfig.split_time,
+					get_output_format_name(appconfig.output_format),
+					appconfig.output);
 			return EXIT_SUCCESS;
 
 		case 'V' /* --version */ :
@@ -643,9 +654,6 @@ int main(int argc, char *argv[]) {
 			appconfig.pcm_rate = abs(atoi(optarg));
 			break;
 
-		case 'p' /* --out-prefix */ :
-			strncpy(appconfig.output_prefix, optarg, sizeof(appconfig.output_prefix) - 1);
-			break;
 		case 'o' /* --out-format */ :
 			for (i = 0; i < sizeof(output_formats) / sizeof(*output_formats); i++)
 				if (strcasecmp(output_formats[i].name, optarg) == 0) {
@@ -687,6 +695,9 @@ int main(int argc, char *argv[]) {
 			fprintf(stderr, "Try '%s --help' for more information.\n", argv[0]);
 			return EXIT_FAILURE;
 		}
+
+	if (optind < argc)
+		appconfig.output = argv[optind];
 
 	/* print application banner */
 	printf("%s\n", appconfig.banner);

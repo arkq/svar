@@ -21,8 +21,9 @@ For low CPU consumption WAV is recommended - it is the default selection.
 
 There is also possible to split output file into chunks containing continuous recording. New
 output file is generated every time a new signal appears (after the split time period). In such a
-case, the time of signal appearance can be determined by the timestamp attached to the output file
-name. The timestamp is in the following format: DD-HH:MM:SS.
+case, the time of signal appearance can be determined by the output file name, which by default is
+in the format of "rec-DD-HH:MM:SS". It is possible to customize it with a [`strftime(3)` format
+string](https://man7.org/linux/man-pages/man3/strftime.3.html).
 
 For the fine adjustment of the activation condition (the signal level), one can run svar with the
 `--sig-meter` parameter. This activates the signal meter mode, in which the maximal peak value and
