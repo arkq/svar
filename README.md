@@ -1,5 +1,6 @@
-SVAR - Simple Voice Activated Recorder
-======================================
+# SVAR - Simple Voice Activated Recorder
+
+[![Build Status](https://github.com/Arkq/svar/actions/workflows/cmakebuild.yaml/badge.svg)](https://github.com/Arkq/svar/actions/workflows/cmakebuild.yaml)
 
 It is a simple console application (low memory footprint and CPU usage) designed for recording
 audio when a specified signal level is exceeded. It is commonly known solution called Voice
@@ -12,6 +13,7 @@ Alternatively, it is possible to force PortAudio back-end on Linux systems by ad
 `-DENABLE_PORTAUDIO=ON` to the CMake configuration step.
 
 Currently this application supports four output formats:
+
 - RAW (PCM 16bit interleaved)
 - WAV ([libsndfile](http://www.mega-nerd.com/libsndfile/))
 - MP3 ([mp3lame](http://lame.sourceforge.net/))
@@ -30,9 +32,10 @@ For the fine adjustment of the activation condition (the signal level), one can 
 the RMS is displayed. Activation threshold is based on the maximal peak value in the signal
 packed (time of tenth of the second).
 
-Installation
-------------
+## Installation
 
-	$ mkdir build && cd build
-	$ cmake .. -DENABLE_SNDFILE=ON -DENABLE_MP3LAME=ON -DENABLE_VORBIS=ON
-	$ make && make install
+```sh
+mkdir build && cd build
+cmake .. -DENABLE_SNDFILE=ON -DENABLE_MP3LAME=ON -DENABLE_VORBIS=ON
+make && make install
+```

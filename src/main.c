@@ -1,6 +1,6 @@
 /*
  * SVAR - main.c
- * Copyright (c) 2010-2020 Arkadiusz Bokowy
+ * Copyright (c) 2010-2021 Arkadiusz Bokowy
  *
  * This file is a part of SVAR.
  *
@@ -49,9 +49,15 @@
 
 enum output_format {
 	FORMAT_RAW = 0,
+#if ENABLE_SNDFILE
 	FORMAT_WAV,
+#endif
+#if ENABLE_MP3LAME
 	FORMAT_MP3,
+#endif
+#if ENABLE_VORBIS
 	FORMAT_OGG,
+#endif
 };
 
 /* available output formats */
@@ -225,15 +231,19 @@ static void print_audio_info(void) {
 	if (!appconfig.signal_meter)
 		printf("Output file format: %s\n",
 				get_output_format_name(appconfig.output_format));
+#if ENABLE_MP3LAME
 	if (appconfig.output_format == FORMAT_MP3)
 		printf("Output bit rate [min, max]: %d, %d kbit/s\n",
 				appconfig.bitrate_min / 1000,
 				appconfig.bitrate_max / 1000);
+#endif
+#if ENABLE_VORBIS
 	if (appconfig.output_format == FORMAT_OGG)
 		printf("Output bit rate [min, nominal, max]: %d, %d, %d kbit/s\n",
 				appconfig.bitrate_min / 1000,
 				appconfig.bitrate_nom / 1000,
 				appconfig.bitrate_max / 1000);
+#endif
 }
 
 #if ENABLE_PORTAUDIO
@@ -272,7 +282,7 @@ static void peak_check_S16_LE(const int16_t *buffer, size_t frames, int channels
 		sum2 += abslvl * abslvl;
 	}
 
-	*rms = sqrt((double)sum2 / frames);
+	*rms = ceil(sqrt((double)sum2 / frames));
 }
 
 /* Process incoming audio frames. */

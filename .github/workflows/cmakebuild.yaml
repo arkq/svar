@@ -1,0 +1,46 @@
+name: CI - Build and Test
+on:
+  push:
+  pull_request:
+    branches: [ master ]
+jobs:
+  build:
+    strategy:
+      matrix:
+        build-type: [ Debug, Release ]
+        port-audio: [ ENABLE_PORTAUDIO=ON, ENABLE_PORTAUDIO=OFF ]
+      fail-fast: false
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install Dependencies
+      run: |
+        sudo apt update
+        sudo apt install --yes --quiet --no-install-recommends \
+          libasound2-dev \
+          libmp3lame-dev \
+          libogg-dev \
+          libsndfile1-dev \
+          libvorbis-dev \
+          portaudio19-dev
+    - uses: actions/checkout@v2
+    - name: Create Build Environment
+      run: cmake -E make_directory ${{ github.workspace }}/build
+    - name: Configure CMake
+      working-directory: ${{ github.workspace }}/build
+      # Note the current convention is to use the -S and -B options here to
+      # specify source and build directories, but this is only available with
+      # CMake 3.13 and higher. The CMake binaries on the Github Actions
+      # machines are (as of this writing) 3.12
+      run: >
+        cmake $GITHUB_WORKSPACE
+        -DCMAKE_BUILD_TYPE=${{ matrix.build-type }}
+        -D${{ matrix.port-audio }}
+        -DENABLE_MP3LAME=ON
+        -DENABLE_SNDFILE=ON
+        -DENABLE_VORBIS=ON
+    - name: Build
+      working-directory: ${{ github.workspace }}/build
+      run: cmake --build . --config ${{ matrix.build-type }}
+    - name: Test
+      working-directory: ${{ github.workspace }}/build
+      run: ctest -C ${{ matrix.build-type }}
