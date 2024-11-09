@@ -103,10 +103,19 @@ int writer_vorbis_open(struct writer_vorbis *w, const char *pathname) {
 }
 
 void writer_vorbis_close(struct writer_vorbis *w) {
+
+	ogg_page o_page;
+	size_t len = 0;
+
 	if (w->fp == NULL)
 		return;
 	vorbis_analysis_wrote(&w->vbs_d, 0);
 	do_analysis_and_write_ogg(w);
+	/* flush any un-written partial ogg page */
+	while (ogg_stream_flush(&w->ogg_s, &o_page)) {
+		len += fwrite(o_page.header, 1, o_page.header_len, w->fp);
+		len += fwrite(o_page.body, 1, o_page.body_len, w->fp);
+	}
 	ogg_stream_clear(&w->ogg_s);
 	vorbis_block_clear(&w->vbs_b);
 	vorbis_dsp_clear(&w->vbs_d);
