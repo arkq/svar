@@ -20,7 +20,6 @@ jobs:
     strategy:
       matrix:
         build-type: [ Release ]
-        language: [ cpp ]
       fail-fast: false
     runs-on: ubuntu-latest
     steps:
@@ -34,11 +33,11 @@ jobs:
           libsndfile1-dev \
           libvorbis-dev \
           portaudio19-dev
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v1
+      uses: github/codeql-action/init@v3
       with:
-        languages: ${{ matrix.language }}
+        languages: cpp
         queries: security-and-quality
     - name: Create Build Environment
       run: cmake -E make_directory ${{ github.workspace }}/build
@@ -59,4 +58,4 @@ jobs:
       working-directory: ${{ github.workspace }}/build
       run: cmake --build . --config ${{ matrix.build-type }}
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v1
+      uses: github/codeql-action/analyze@v3
