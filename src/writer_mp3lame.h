@@ -1,11 +1,7 @@
 /*
  * SVAR - writer_mp3lame.h
- * Copyright (c) 2010-2020 Arkadiusz Bokowy
- *
- * This file is a part of SVAR.
- *
- * This project is licensed under the terms of the MIT license.
- *
+ * SPDX-FileCopyrightText: 2010-2020 Arkadiusz Bokowy and contributors
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef SVAR_WRITER_MP3LAME_H_

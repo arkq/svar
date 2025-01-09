@@ -1,14 +1,26 @@
-name: CI - Build and Test
+# SVAR - code-scanning.yaml
+# SPDX-FileCopyrightText: 2021-2025 Arkadiusz Bokowy and contributors
+# SPDX-License-Identifier: MIT
+
+name: Code Scanning
+
 on:
   push:
   pull_request:
     branches: [ master ]
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
 jobs:
-  build:
+
+  code-ql:
     strategy:
       matrix:
-        build-type: [ Debug, Release ]
-        port-audio: [ ENABLE_PORTAUDIO=ON, ENABLE_PORTAUDIO=OFF ]
+        build-type: [ Release ]
+        language: [ cpp ]
       fail-fast: false
     runs-on: ubuntu-latest
     steps:
@@ -23,6 +35,11 @@ jobs:
           libvorbis-dev \
           portaudio19-dev
     - uses: actions/checkout@v2
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v1
+      with:
+        languages: ${{ matrix.language }}
+        queries: security-and-quality
     - name: Create Build Environment
       run: cmake -E make_directory ${{ github.workspace }}/build
     - name: Configure CMake
@@ -34,13 +51,12 @@ jobs:
       run: >
         cmake $GITHUB_WORKSPACE
         -DCMAKE_BUILD_TYPE=${{ matrix.build-type }}
-        -D${{ matrix.port-audio }}
+        -DENABLE_PORTAUDIO=ON
         -DENABLE_MP3LAME=ON
         -DENABLE_SNDFILE=ON
         -DENABLE_VORBIS=ON
     - name: Build
       working-directory: ${{ github.workspace }}/build
       run: cmake --build . --config ${{ matrix.build-type }}
-    - name: Test
-      working-directory: ${{ github.workspace }}/build
-      run: ctest -C ${{ matrix.build-type }}
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v1

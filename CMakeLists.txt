@@ -1,9 +1,6 @@
-# CMakeLists.txt
-# Copyright (c) 2014-2020 Arkadiusz Bokowy
-#
-# This file is a part of SVAR.
-#
-# This project is licensed under the terms of the MIT license.
+# SVAR - CMakeLists.txt
+# SPDX-FileCopyrightText: 2014-2025 Arkadiusz Bokowy and contributors
+# SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.1)
 

@@ -1,6 +1,6 @@
 # SVAR - Simple Voice Activated Recorder
 
-[![Build Status](https://github.com/Arkq/svar/actions/workflows/cmakebuild.yaml/badge.svg)](https://github.com/Arkq/svar/actions/workflows/cmakebuild.yaml)
+[![Build Status](https://github.com/arkq/svar/actions/workflows/build-and-test.yaml/badge.svg)](https://github.com/arkq/svar/actions/workflows/build-and-test.yaml)
 
 It is a simple console application (low memory footprint and CPU usage) designed for recording
 audio when a specified signal level is exceeded. It is commonly known solution called Voice

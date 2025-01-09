@@ -1,11 +1,7 @@
 /*
  * SVAR - debug.h
- * Copyright (c) 2014-2017 Arkadiusz Bokowy
- *
- * This file is a part of SVAR.
- *
- * This project is licensed under the terms of the MIT license.
- *
+ * SPDX-FileCopyrightText: 2014-2017 Arkadiusz Bokowy and contributors
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef SVAR_DEBUG_H_

@@ -1,11 +1,7 @@
 /*
  * SVAR - main.c
- * Copyright (c) 2010-2021 Arkadiusz Bokowy
- *
- * This file is a part of SVAR.
- *
- * This project is licensed under the terms of the MIT license.
- *
+ * SPDX-FileCopyrightText: 2010-2021 Arkadiusz Bokowy and contributors
+ * SPDX-License-Identifier: MIT
  */
 
 #if HAVE_CONFIG_H

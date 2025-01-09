@@ -1,4 +1,6 @@
-# Distributed under the terms of the MIT license.
+# SVAR - FindMp3Lame.cmake
+# SPDX-FileCopyrightText: 2020-2025 Arkadiusz Bokowy and contributors
+# SPDX-License-Identifier: MIT
 
 find_path(LAME_INCLUDE_DIR lame/lame.h)
 find_library(LAME_LIBRARIES NAMES mp3lame)
