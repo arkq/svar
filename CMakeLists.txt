@@ -2,10 +2,10 @@
 # SPDX-FileCopyrightText: 2014-2025 Arkadiusz Bokowy and contributors
 # SPDX-License-Identifier: MIT
 
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.11)
 
 project(svar
-	VERSION 1.2.0
+	VERSION 1.3.1
 	DESCRIPTION "Simple Voice Activated Recorder"
 	LANGUAGES C)
 

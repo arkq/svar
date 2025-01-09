@@ -1,6 +1,6 @@
 /*
  * SVAR - main.c
- * SPDX-FileCopyrightText: 2010-2021 Arkadiusz Bokowy and contributors
+ * SPDX-FileCopyrightText: 2010-2025 Arkadiusz Bokowy and contributors
  * SPDX-License-Identifier: MIT
  */
 
@@ -172,7 +172,7 @@ static int pcm_set_hw_params(snd_pcm_t *pcm, char **msg) {
 
 	snd_pcm_hw_params_alloca(&params);
 
-	if ((err = snd_pcm_hw_params_any(pcm, params)) != 0) {
+	if ((err = snd_pcm_hw_params_any(pcm, params)) < 0) {
 		snprintf(buf, sizeof(buf), "Set all possible ranges: %s", snd_strerror(err));
 		goto fail;
 	}
