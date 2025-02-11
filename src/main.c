@@ -106,12 +106,15 @@ static struct appconfig_t {
 
 	/* read/write synchronization */
 	pthread_mutex_t mutex;
-	pthread_cond_t ready;
+	pthread_cond_t ready_cond;
+
+	/* is the reader active */
+	bool active;
+
+	/* reader buffer */
 	int16_t *buffer;
-	/* current position */
-	size_t current;
-	/* buffer size */
-	size_t size;
+	size_t buffer_read_len;
+	size_t buffer_size;
 
 } appconfig = {
 
@@ -148,17 +151,15 @@ static struct appconfig_t {
 	.bitrate_nom = 64000,
 	.bitrate_max = 128000,
 
+	.mutex = PTHREAD_MUTEX_INITIALIZER,
+	.ready_cond = PTHREAD_COND_INITIALIZER,
+	.active = true,
+
 };
 
-static bool main_loop_on = true;
 static void main_loop_stop(int sig) {
-	/* Call to this handler restores the default action, so on the
-	 * second call the program will be forcefully terminated. */
-
-	struct sigaction sigact = { .sa_handler = SIG_DFL };
-	sigaction(sig, &sigact, NULL);
-
-	main_loop_on = false;
+	appconfig.active = false;
+	(void)sig;
 }
 
 #if !ENABLE_PORTAUDIO
@@ -311,11 +312,11 @@ static void process_audio_S16_LE(const int16_t *buffer, size_t frames, int chann
 
 		pthread_mutex_lock(&appconfig.mutex);
 
-		/* if this will happen, nothing is going to save us... */
-		if (appconfig.current == appconfig.size) {
-			appconfig.current = 0;
+		if (appconfig.buffer_read_len == appconfig.buffer_size) {
+			/* Drop the current buffer, so we can process incoming data. */
 			if (appconfig.verbose)
 				warn("Reader buffer overrun");
+			appconfig.buffer_read_len = 0;
 		}
 
 		/* NOTE: The size of data returned by the pcm_read in the blocking mode is
@@ -323,15 +324,17 @@ static void process_audio_S16_LE(const int16_t *buffer, size_t frames, int chann
 		 *       external one) is an integer multiplication of our internal buffer,
 		 *       there is no need for any fancy boundary check. However, this might
 		 *       not be true if someone is using CPU profiling tool, like cpulimit. */
-		memcpy(&appconfig.buffer[appconfig.current], buffer,
+		memcpy(&appconfig.buffer[appconfig.buffer_read_len], buffer,
 				sizeof(int16_t) * frames * appconfig.pcm_channels);
-		appconfig.current += frames * appconfig.pcm_channels;
+		appconfig.buffer_read_len += frames * appconfig.pcm_channels;
 
 		/* dump reader buffer usage */
-		debug("Buffer usage: %zd out of %zd", appconfig.current, appconfig.size);
+		debug("Buffer usage: %zd out of %zd", appconfig.buffer_read_len, appconfig.buffer_size);
 
-		pthread_cond_signal(&appconfig.ready);
 		pthread_mutex_unlock(&appconfig.mutex);
+
+		/* Notify the processing thread that new data are available. */
+		pthread_cond_signal(&appconfig.ready_cond);
 
 	}
 
@@ -348,7 +351,7 @@ static int pa_capture_callback(const void *inputBuffer, void *outputBuffer,
 	(void)statusFlags;
 	(void)userData;
 	process_audio_S16_LE(inputBuffer, framesPerBuffer, appconfig.pcm_channels);
-	return main_loop_on ? paContinue : paComplete;
+	return appconfig.active ? paContinue : paComplete;
 }
 
 #else
@@ -356,11 +359,16 @@ static int pa_capture_callback(const void *inputBuffer, void *outputBuffer,
 /* Thread function for ALSA capture. */
 static void *alsa_capture_thread(void *arg) {
 
-	int16_t *buffer = malloc(sizeof(int16_t) * appconfig.pcm_channels * READER_FRAMES);
+	int16_t *buffer;
+	if ((buffer = malloc(sizeof(int16_t) * appconfig.pcm_channels * READER_FRAMES)) == NULL) {
+		error("Couldn't allocate memory for capturing PCM: %s", strerror(errno));
+		return NULL;
+	}
+
 	snd_pcm_sframes_t frames;
 	snd_pcm_t *pcm = arg;
 
-	while (main_loop_on) {
+	while (appconfig.active) {
 		if ((frames = snd_pcm_readi(pcm, buffer, READER_FRAMES)) < 0)
 			switch (frames) {
 			case -EPIPE:
@@ -369,6 +377,9 @@ static void *alsa_capture_thread(void *arg) {
 				if (appconfig.verbose)
 					warn("PCM buffer overrun: %s", snd_strerror(frames));
 				continue;
+			case -ENODEV:
+				error("PCM read error: %s", "Device disconnected");
+				goto fail;
 			default:
 				error("PCM read error: %s", snd_strerror(frames));
 				continue;
@@ -376,6 +387,7 @@ static void *alsa_capture_thread(void *arg) {
 		process_audio_S16_LE(buffer, frames, appconfig.pcm_channels);
 	}
 
+fail:
 	free(buffer);
 	return NULL;
 }
@@ -439,16 +451,19 @@ static void *processing_thread(void *arg) {
 	}
 #endif
 
-	while (main_loop_on) {
+	while (appconfig.active) {
 
 		/* copy data from the reader buffer into our internal one */
 		pthread_mutex_lock(&appconfig.mutex);
-		if (appconfig.current == 0) /* wait until new data are available */
-			pthread_cond_wait(&appconfig.ready, &appconfig.mutex);
-		memcpy(buffer, appconfig.buffer, sizeof(int16_t) * appconfig.current);
-		frames = appconfig.current / appconfig.pcm_channels;
-		appconfig.current = 0;
+		while (appconfig.active && appconfig.buffer_read_len == 0)
+			pthread_cond_wait(&appconfig.ready_cond, &appconfig.mutex);
+		memcpy(buffer, appconfig.buffer, sizeof(int16_t) * appconfig.buffer_read_len);
+		frames = appconfig.buffer_read_len / appconfig.pcm_channels;
+		appconfig.buffer_read_len = 0;
 		pthread_mutex_unlock(&appconfig.mutex);
+
+		if (frames == 0)
+			continue;
 
 		/* check if new file should be created (activity time based) */
 		clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
@@ -715,11 +730,9 @@ int main(int argc, char *argv[]) {
 	int err;
 
 	/* initialize reader data */
-	pthread_mutex_init(&appconfig.mutex, NULL);
-	pthread_cond_init(&appconfig.ready, NULL);
-	appconfig.size = appconfig.pcm_channels * PROCESSING_FRAMES;
-	appconfig.buffer = malloc(sizeof(int16_t) * appconfig.size);
-	appconfig.current = 0;
+	appconfig.buffer_size = appconfig.pcm_channels * PROCESSING_FRAMES;
+	appconfig.buffer = malloc(sizeof(int16_t) * appconfig.buffer_size);
+	appconfig.buffer_read_len = 0;
 
 	if (appconfig.buffer == NULL) {
 		error("Failed to allocate memory for read buffer");
@@ -768,7 +781,7 @@ int main(int argc, char *argv[]) {
 	if (appconfig.verbose)
 		print_audio_info();
 
-	struct sigaction sigact = { .sa_handler = main_loop_stop };
+	struct sigaction sigact = { .sa_handler = main_loop_stop, .sa_flags = SA_RESETHAND };
 	sigaction(SIGTERM, &sigact, NULL);
 	sigaction(SIGINT, &sigact, NULL);
 
@@ -793,16 +806,18 @@ int main(int argc, char *argv[]) {
 #if ENABLE_PORTAUDIO
 	while ((pa_err = Pa_IsStreamActive(pa_stream)) == 1)
 		Pa_Sleep(1000);
-	if (pa_err < 0) {
+	if (pa_err < 0)
 		error("Couldn't check PortAudio activity: %s", Pa_GetErrorText(pa_err));
-		return EXIT_FAILURE;
-	}
 #else
 	pthread_join(thread_alsa_capture_id, NULL);
 #endif
 
-	/* avoid dead-lock on the condition wait */
-	pthread_cond_signal(&appconfig.ready);
+	/* Gracefully stop the processing thread. */
+	pthread_mutex_lock(&appconfig.mutex);
+	appconfig.active = false;
+	pthread_mutex_unlock(&appconfig.mutex);
+	pthread_cond_signal(&appconfig.ready_cond);
+
 	pthread_join(thread_process_id, NULL);
 
 	if (appconfig.signal_meter)
