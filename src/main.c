@@ -43,93 +43,51 @@
 #define READER_FRAMES 512 * 8
 #define PROCESSING_FRAMES READER_FRAMES * 16
 
-/* global application settings */
-static struct appconfig_t {
+/* Application banner used for output file comment string. */
+static const char * banner = "SVAR - Simple Voice Activated Recorder";
+/* The verbose level used for debugging. */
+static int verbose = 0;
 
-	/* application banner */
-	char *banner;
-
-	/* capturing PCM device */
-	char pcm_device[25];
-	int pcm_device_id;
-	unsigned int pcm_channels;
-	unsigned int pcm_rate;
-
-	/* if true, run signal meter only */
-	bool signal_meter;
-	/* output verboseness level */
-	int verbose;
-
-	/* selected output format */
-	enum writer_format format;
-	const char * format_name;
-
-	/* strftime() format for output file */
-	const char * output;
-
-	int threshold;    /* % of max signal */
-	int fadeout_time; /* in ms */
-	int split_time;   /* in s (0 disables split) */
-
-	/* variable bit rate settings for encoder (bit per second) */
-	int bitrate_min;
-	int bitrate_nom;
-	int bitrate_max;
-
-	/* read/write synchronization */
-	pthread_mutex_t mutex;
-	pthread_cond_t ready_cond;
-
-	/* is the reader active */
-	bool active;
-
-	/* reader buffer */
-	int16_t *buffer;
-	size_t buffer_read_len;
-	size_t buffer_size;
-
-} appconfig = {
-
-	.banner = "SVAR - Simple Voice Activated Recorder",
-
-	.pcm_device = "default",
-	.pcm_device_id = 0,
-	.pcm_channels = 1,
-	.pcm_rate = 44100,
-
-	.signal_meter = false,
-	.verbose = 0,
-
-	/* default output format */
-#if ENABLE_SNDFILE
-	.format = WRITER_FORMAT_WAV,
-#elif ENABLE_VORBIS
-	.format = WRITER_FORMAT_OGG,
-#elif ENABLE_MP3LAME
-	.format = WWRITER_FORMAT_MP3,
+/* Selected capturing PCM device. */
+#if ENABLE_PORTAUDIO
+static int pcm_device_id = 0;
 #else
-	.format = WRITER_FORMAT_RAW,
+static char pcm_device[25] = "default";
 #endif
-	/* strftime() format string for output file */
-	.output = "rec-%d-%H:%M:%S",
+static unsigned int pcm_channels = 1;
+static unsigned int pcm_rate = 44100;
 
-	.threshold = 2,
-	.fadeout_time = 500,
-	.split_time = 0,
+/* If true, run signal meter only. */
+static bool signal_meter = false;
 
-	/* default compression settings */
-	.bitrate_min = 32000,
-	.bitrate_nom = 64000,
-	.bitrate_max = 128000,
+/* Selected output writer. */
+static struct writer * writer = NULL;
+/* The strftime() format template for output file. */
+static const char * template = "rec-%d-%H:%M:%S";
 
-	.mutex = PTHREAD_MUTEX_INITIALIZER,
-	.ready_cond = PTHREAD_COND_INITIALIZER,
-	.active = true,
+/* Variable bit rate settings for writers which support it. */
+static int bitrate_min = 32000;
+static int bitrate_nom = 64000;
+static int bitrate_max = 128000;
 
-};
+/* The signal level threshold for activation (percentage of max signal). */
+static int threshold = 2;
+/* The fadeout time lag in ms after the last signal peak. */
+static int fadeout_time = 500;
+/* The split time in seconds for creating new output file. */
+static int split_time = 0; /* disable splitting by default */
+
+/* Reader/writer synchronization. */
+static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t ready_cond = PTHREAD_COND_INITIALIZER;
+
+static bool active = true;
+static int16_t * pcm_buffer;
+static size_t pcm_buffer_read_len;
+static size_t pcm_buffer_size;
 
 static void main_loop_stop(int sig) {
-	appconfig.active = false;
+	active = false;
 	(void)sig;
 }
 
@@ -158,12 +116,12 @@ static int pcm_set_hw_params(snd_pcm_t *pcm, char **msg) {
 				snd_strerror(err), snd_pcm_format_name(SND_PCM_FORMAT_S16_LE));
 		goto fail;
 	}
-	if ((err = snd_pcm_hw_params_set_channels_near(pcm, params, &appconfig.pcm_channels)) != 0) {
-		snprintf(buf, sizeof(buf), "Set channels: %s: %d", snd_strerror(err), appconfig.pcm_channels);
+	if ((err = snd_pcm_hw_params_set_channels_near(pcm, params, &pcm_channels)) != 0) {
+		snprintf(buf, sizeof(buf), "Set channels: %s: %d", snd_strerror(err), pcm_channels);
 		goto fail;
 	}
-	if ((err = snd_pcm_hw_params_set_rate_near(pcm, params, &appconfig.pcm_rate, &dir)) != 0) {
-		snprintf(buf, sizeof(buf), "Set sampling rate: %s: %d", snd_strerror(err), appconfig.pcm_rate);
+	if ((err = snd_pcm_hw_params_set_rate_near(pcm, params, &pcm_rate, &dir)) != 0) {
+		snprintf(buf, sizeof(buf), "Set sampling rate: %s: %d", snd_strerror(err), pcm_rate);
 		goto fail;
 	}
 	if ((err = snd_pcm_hw_params(pcm, params)) != 0) {
@@ -182,25 +140,25 @@ fail:
 
 /* Print some information about the audio device and its configuration. */
 static void print_audio_info(void) {
-	printf("Selected PCM device: %s\n"
-			"Hardware parameters: %d Hz, S16LE, %d channel%s\n",
-			appconfig.pcm_device,
-			appconfig.pcm_rate,
-			appconfig.pcm_channels, appconfig.pcm_channels > 1 ? "s" : "");
-	if (!appconfig.signal_meter)
-		printf("Output file format: %s\n", appconfig.format_name);
+#if ENABLE_PORTAUDIO
+	printf("Selected PCM device ID: %d\n", pcm_device_id);
+#else
+	printf("Selected PCM device: %s\n", pcm_device);
+#endif
+	printf("Hardware parameters: %d Hz, S16LE, %d channel%s\n",
+			pcm_rate, pcm_channels, pcm_channels > 1 ? "s" : "");
+	if (!signal_meter)
+		printf("Output file format: %s\n",
+				writer_format_to_string(writer->format));
 #if ENABLE_MP3LAME
-	if (appconfig.format == WRITER_FORMAT_MP3)
+	if (writer->format == WRITER_FORMAT_MP3)
 		printf("Output bit rate [min, max]: %d, %d kbit/s\n",
-				appconfig.bitrate_min / 1000,
-				appconfig.bitrate_max / 1000);
+				bitrate_min / 1000, bitrate_max / 1000);
 #endif
 #if ENABLE_VORBIS
-	if (appconfig.format == WRITER_FORMAT_OGG)
+	if (writer->format == WRITER_FORMAT_OGG)
 		printf("Output bit rate [min, nominal, max]: %d, %d, %d kbit/s\n",
-				appconfig.bitrate_min / 1000,
-				appconfig.bitrate_nom / 1000,
-				appconfig.bitrate_max / 1000);
+				bitrate_min / 1000, bitrate_nom / 1000, bitrate_max / 1000);
 #endif
 }
 
@@ -216,7 +174,7 @@ static void pa_list_devices(void) {
 	for (i = 0; i < count; i++) {
 		if ((info = Pa_GetDeviceInfo(i))->maxInputChannels > 0)
 			printf(" %c%*d:\t%s\n",
-					i == appconfig.pcm_device_id ? '*' : ' ',
+					i == pcm_device_id ? '*' : ' ',
 					len, i, info->name);
 	}
 
@@ -254,7 +212,7 @@ static void process_audio_S16_LE(const int16_t *buffer, size_t frames, int chann
 
 	peak_check_S16_LE(buffer, frames, channels, &signal_peak, &signal_rms);
 
-	if (appconfig.signal_meter) {
+	if (signal_meter) {
 		/* dump current peak and RMS values to the stdout */
 		printf("\rsignal peak [%%]: %3u, signal RMS [%%]: %3u\r",
 				signal_peak * 100 / 0x7ffe, signal_rms * 100 / 0x7ffe);
@@ -264,20 +222,20 @@ static void process_audio_S16_LE(const int16_t *buffer, size_t frames, int chann
 
 	/* if the max peak in the buffer is greater than the threshold, update
 	 * the last peak time */
-	if ((int)signal_peak * 100 / 0x7ffe > appconfig.threshold)
+	if ((int)signal_peak * 100 / 0x7ffe > threshold)
 		clock_gettime(CLOCK_MONOTONIC_RAW, &peak_time);
 
 	clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
 	if ((current_time.tv_sec - peak_time.tv_sec) * 1000 +
-			(current_time.tv_nsec - peak_time.tv_nsec) / 1000000 < appconfig.fadeout_time) {
+			(current_time.tv_nsec - peak_time.tv_nsec) / 1000000 < fadeout_time) {
 
-		pthread_mutex_lock(&appconfig.mutex);
+		pthread_mutex_lock(&mutex);
 
-		if (appconfig.buffer_read_len == appconfig.buffer_size) {
+		if (pcm_buffer_read_len == pcm_buffer_size) {
 			/* Drop the current buffer, so we can process incoming data. */
-			if (appconfig.verbose)
+			if (verbose >= 1)
 				warn("Reader buffer overrun");
-			appconfig.buffer_read_len = 0;
+			pcm_buffer_read_len = 0;
 		}
 
 		/* NOTE: The size of data returned by the pcm_read in the blocking mode is
@@ -285,17 +243,17 @@ static void process_audio_S16_LE(const int16_t *buffer, size_t frames, int chann
 		 *       external one) is an integer multiplication of our internal buffer,
 		 *       there is no need for any fancy boundary check. However, this might
 		 *       not be true if someone is using CPU profiling tool, like cpulimit. */
-		memcpy(&appconfig.buffer[appconfig.buffer_read_len], buffer,
-				sizeof(int16_t) * frames * appconfig.pcm_channels);
-		appconfig.buffer_read_len += frames * appconfig.pcm_channels;
+		memcpy(&pcm_buffer[pcm_buffer_read_len], buffer,
+				sizeof(int16_t) * frames * pcm_channels);
+		pcm_buffer_read_len += frames * pcm_channels;
 
 		/* dump reader buffer usage */
-		debug("Buffer usage: %zd out of %zd", appconfig.buffer_read_len, appconfig.buffer_size);
+		debug("Buffer usage: %zd out of %zd", pcm_buffer_read_len, pcm_buffer_size);
 
-		pthread_mutex_unlock(&appconfig.mutex);
+		pthread_mutex_unlock(&mutex);
 
 		/* Notify the processing thread that new data are available. */
-		pthread_cond_signal(&appconfig.ready_cond);
+		pthread_cond_signal(&ready_cond);
 
 	}
 
@@ -311,8 +269,8 @@ static int pa_capture_callback(const void *inputBuffer, void *outputBuffer,
 	(void)timeInfo;
 	(void)statusFlags;
 	(void)userData;
-	process_audio_S16_LE(inputBuffer, framesPerBuffer, appconfig.pcm_channels);
-	return appconfig.active ? paContinue : paComplete;
+	process_audio_S16_LE(inputBuffer, framesPerBuffer, pcm_channels);
+	return active ? paContinue : paComplete;
 }
 
 #else
@@ -321,7 +279,7 @@ static int pa_capture_callback(const void *inputBuffer, void *outputBuffer,
 static void *alsa_capture_thread(void *arg) {
 
 	int16_t *buffer;
-	if ((buffer = malloc(sizeof(int16_t) * appconfig.pcm_channels * READER_FRAMES)) == NULL) {
+	if ((buffer = malloc(sizeof(int16_t) * pcm_channels * READER_FRAMES)) == NULL) {
 		error("Couldn't allocate memory for capturing PCM: %s", strerror(errno));
 		return NULL;
 	}
@@ -329,13 +287,13 @@ static void *alsa_capture_thread(void *arg) {
 	snd_pcm_sframes_t frames;
 	snd_pcm_t *pcm = arg;
 
-	while (appconfig.active) {
+	while (active) {
 		if ((frames = snd_pcm_readi(pcm, buffer, READER_FRAMES)) < 0)
 			switch (frames) {
 			case -EPIPE:
 			case -ESTRPIPE:
 				snd_pcm_recover(pcm, frames, 1);
-				if (appconfig.verbose)
+				if (verbose >= 1)
 					warn("PCM buffer overrun: %s", snd_strerror(frames));
 				continue;
 			case -ENODEV:
@@ -345,7 +303,7 @@ static void *alsa_capture_thread(void *arg) {
 				error("PCM read error: %s", snd_strerror(frames));
 				continue;
 			}
-		process_audio_S16_LE(buffer, frames, appconfig.pcm_channels);
+		process_audio_S16_LE(buffer, frames, pcm_channels);
 	}
 
 fail:
@@ -359,11 +317,10 @@ fail:
 static void *processing_thread(void *arg) {
 	(void)arg;
 
-	if (appconfig.signal_meter)
+	if (signal_meter)
 		return NULL;
 
-	struct writer * writer = NULL;
-	int16_t *buffer = malloc(sizeof(int16_t) * appconfig.pcm_channels * PROCESSING_FRAMES);
+	int16_t *buffer = malloc(sizeof(int16_t) * pcm_channels * PROCESSING_FRAMES);
 	size_t frames = 0;
 
 	struct timespec current_time;
@@ -375,55 +332,24 @@ static void *processing_thread(void *arg) {
 	char file_name_tmp[192];
 	char file_name[192 + 4];
 
-	switch (appconfig.format) {
-	case WRITER_FORMAT_RAW:
-		writer = writer_raw_new(appconfig.pcm_channels);
-		break;
-#if ENABLE_SNDFILE
-	case WRITER_FORMAT_WAV:
-		writer = writer_wav_new(appconfig.pcm_channels, appconfig.pcm_rate);
-		break;
-#endif
-#if ENABLE_MP3LAME
-	case WRITER_FORMAT_MP3:
-		writer = writer_mp3_new(appconfig.pcm_channels, appconfig.pcm_rate,
-				appconfig.bitrate_min, appconfig.bitrate_max, appconfig.banner);
-		if (appconfig.verbose >= 2)
-			writer_mp3_print_internals(writer);
-		break;
-#endif
-#if ENABLE_VORBIS
-	case WRITER_FORMAT_OGG:
-		writer = writer_ogg_new(appconfig.pcm_channels, appconfig.pcm_rate,
-				appconfig.bitrate_min, appconfig.bitrate_nom, appconfig.bitrate_max,
-				appconfig.banner);
-		break;
-#endif
-	}
-
-	if (writer == NULL) {
-		error("Couldn't create writer: %s", strerror(errno));
-		exit(EXIT_FAILURE);
-	}
-
-	while (appconfig.active) {
+	while (active) {
 
 		/* copy data from the reader buffer into our internal one */
-		pthread_mutex_lock(&appconfig.mutex);
-		while (appconfig.active && appconfig.buffer_read_len == 0)
-			pthread_cond_wait(&appconfig.ready_cond, &appconfig.mutex);
-		memcpy(buffer, appconfig.buffer, sizeof(int16_t) * appconfig.buffer_read_len);
-		frames = appconfig.buffer_read_len / appconfig.pcm_channels;
-		appconfig.buffer_read_len = 0;
-		pthread_mutex_unlock(&appconfig.mutex);
+		pthread_mutex_lock(&mutex);
+		while (active && pcm_buffer_read_len == 0)
+			pthread_cond_wait(&ready_cond, &mutex);
+		memcpy(buffer, pcm_buffer, sizeof(int16_t) * pcm_buffer_read_len);
+		frames = pcm_buffer_read_len / pcm_channels;
+		pcm_buffer_read_len = 0;
+		pthread_mutex_unlock(&mutex);
 
 		if (frames == 0)
 			continue;
 
 		/* check if new file should be created (activity time based) */
 		clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
-		if (appconfig.split_time &&
-				(current_time.tv_sec - previous_time.tv_sec) > appconfig.split_time)
+		if (split_time &&
+				(current_time.tv_sec - previous_time.tv_sec) > split_time)
 			create_new_output = true;
 		memcpy(&previous_time, &current_time, sizeof(previous_time));
 
@@ -435,11 +361,11 @@ static void *processing_thread(void *arg) {
 			localtime_r(&tmp_t_time, &tmp_tm_time);
 
 			strftime(file_name_tmp, sizeof(file_name_tmp),
-					appconfig.output, &tmp_tm_time);
+					template, &tmp_tm_time);
 			snprintf(file_name, sizeof(file_name), "%s.%s",
-					file_name_tmp, appconfig.format_name);
+					file_name_tmp, writer_format_to_string(writer->format));
 
-			if (appconfig.verbose)
+			if (verbose >= 1)
 				info("Creating new output file: %s", file_name);
 
 			/* initialize new file for selected encoder */
@@ -463,7 +389,6 @@ fail:
 int main(int argc, char *argv[]) {
 
 	int opt;
-	size_t i;
 	const char *opts = "hVvLD:R:C:l:f:o:s:m";
 	const struct option longopts[] = {
 		{"help", no_argument, NULL, 'h'},
@@ -481,17 +406,26 @@ int main(int argc, char *argv[]) {
 		{0, 0, 0, 0},
 	};
 
+	/* Select default output format based on available libraries. */
+#if ENABLE_SNDFILE
+	enum writer_format format = WRITER_FORMAT_WAV;
+#elif ENABLE_VORBIS
+	enum writer_format format = WRITER_FORMAT_OGG;
+#elif ENABLE_MP3LAME
+	enum writer_format format = WRITER_FORMAT_MP3;
+#else
+	enum writer_format format = WRITER_FORMAT_RAW;
+#endif
+
 #if ENABLE_PORTAUDIO
 	PaError pa_err;
 	if ((pa_err = Pa_Initialize()) != paNoError) {
 		error("Couldn't initialize PortAudio: %s", Pa_GetErrorText(pa_err));
 		return EXIT_FAILURE;
 	}
-	if ((appconfig.pcm_device_id = Pa_GetDefaultInputDevice()) == paNoDevice)
+	if ((pcm_device_id = Pa_GetDefaultInputDevice()) == paNoDevice)
 		warn("Couldn't get default input PortAudio device");
 #endif
-
-	appconfig.format_name = writer_format_to_string(appconfig.format);
 
 	/* arguments parser */
 	while ((opt = getopt_long(argc, argv, opts, longopts, NULL)) != -1)
@@ -522,17 +456,17 @@ int main(int argc, char *argv[]) {
 					"default value is: %s + extension\n",
 					argv[0],
 #if ENABLE_PORTAUDIO
-					appconfig.pcm_device_id,
+					pcm_device_id,
 #else
-					appconfig.pcm_device,
+					pcm_device,
 #endif
-					appconfig.pcm_rate,
-					appconfig.pcm_channels,
-					appconfig.threshold,
-					appconfig.fadeout_time,
-					appconfig.split_time,
-					appconfig.format_name,
-					appconfig.output);
+					pcm_rate,
+					pcm_channels,
+					threshold,
+					fadeout_time,
+					split_time,
+					writer_format_to_string(format),
+					template);
 			return EXIT_SUCCESS;
 
 		case 'V' /* --version */ :
@@ -540,10 +474,10 @@ int main(int argc, char *argv[]) {
 			return EXIT_SUCCESS;
 
 		case 'm' /* --sig-meter */ :
-			appconfig.signal_meter = true;
+			signal_meter = true;
 			break;
 		case 'v' /* --verbose */ :
-			appconfig.verbose++;
+			verbose++;
 			break;
 
 #if ENABLE_PORTAUDIO
@@ -551,19 +485,19 @@ int main(int argc, char *argv[]) {
 			pa_list_devices();
 			return EXIT_SUCCESS;
 		case 'D' /* --device=ID */ :
-			appconfig.pcm_device_id = atoi(optarg);
+			pcm_device_id = atoi(optarg);
 			break;
 #else
 		case 'D' /* --device=DEV */ :
-			strncpy(appconfig.pcm_device, optarg, sizeof(appconfig.pcm_device) - 1);
+			strncpy(pcm_device, optarg, sizeof(pcm_device) - 1);
 			break;
 #endif
 
 		case 'C' /* --channels */ :
-			appconfig.pcm_channels = abs(atoi(optarg));
+			pcm_channels = abs(atoi(optarg));
 			break;
 		case 'R' /* --rate */ :
-			appconfig.pcm_rate = abs(atoi(optarg));
+			pcm_rate = abs(atoi(optarg));
 			break;
 
 		case 'o' /* --out-format */ : {
@@ -581,10 +515,10 @@ int main(int argc, char *argv[]) {
 #endif
 			};
 
+			size_t i;
 			for (i = 0; i < sizeof(formats) / sizeof(*formats); i++)
 				if (strcasecmp(writer_format_to_string(formats[i]), optarg) == 0) {
-					appconfig.format_name = writer_format_to_string(formats[i]);
-					appconfig.format = formats[i];
+					format = formats[i];
 					break;
 				}
 
@@ -601,23 +535,23 @@ int main(int argc, char *argv[]) {
 		} break;
 
 		case 'l' /* --sig-level */ :
-			appconfig.threshold = atoi(optarg);
-			if (appconfig.threshold < 0 || appconfig.threshold > 100) {
-				error("Signal level out of range [0, 100]: %d", appconfig.threshold);
+			threshold = atoi(optarg);
+			if (threshold < 0 || threshold > 100) {
+				error("Signal level out of range [0, 100]: %d", threshold);
 				return EXIT_FAILURE;
 			}
 			break;
 		case 'f' /* --fadeout-lag */ :
-			appconfig.fadeout_time = atoi(optarg);
-			if (appconfig.fadeout_time < 100 || appconfig.fadeout_time > 1000000) {
-				error("Fadeout lag out of range [100, 1000000]: %d", appconfig.fadeout_time);
+			fadeout_time = atoi(optarg);
+			if (fadeout_time < 100 || fadeout_time > 1000000) {
+				error("Fadeout lag out of range [100, 1000000]: %d", fadeout_time);
 				return EXIT_FAILURE;
 			}
 			break;
 		case 's' /* --split-time */ :
-			appconfig.split_time = atoi(optarg);
-			if (appconfig.split_time < 0 || appconfig.split_time > 1000000) {
-				error("Split time out of range [0, 1000000]: %d", appconfig.split_time);
+			split_time = atoi(optarg);
+			if (split_time < 0 || split_time > 1000000) {
+				error("Split time out of range [0, 1000000]: %d", split_time);
 				return EXIT_FAILURE;
 			}
 			break;
@@ -628,10 +562,7 @@ int main(int argc, char *argv[]) {
 		}
 
 	if (optind < argc)
-		appconfig.output = argv[optind];
-
-	/* print application banner */
-	printf("%s\n", appconfig.banner);
+		template = argv[optind];
 
 #if !ENABLE_PORTAUDIO
 	pthread_t thread_alsa_capture_id;
@@ -640,11 +571,11 @@ int main(int argc, char *argv[]) {
 	int err;
 
 	/* initialize reader data */
-	appconfig.buffer_size = appconfig.pcm_channels * PROCESSING_FRAMES;
-	appconfig.buffer = malloc(sizeof(int16_t) * appconfig.buffer_size);
-	appconfig.buffer_read_len = 0;
+	pcm_buffer_size = pcm_channels * PROCESSING_FRAMES;
+	pcm_buffer = malloc(sizeof(int16_t) * pcm_buffer_size);
+	pcm_buffer_read_len = 0;
 
-	if (appconfig.buffer == NULL) {
+	if (pcm_buffer == NULL) {
 		error("Couldn't create reader buffer: %s", strerror(errno));
 		return EXIT_FAILURE;
 	}
@@ -654,13 +585,13 @@ int main(int argc, char *argv[]) {
 	PaStream *pa_stream = NULL;
 	PaStreamParameters pa_params = {
 		.sampleFormat = paInt16,
-		.device = appconfig.pcm_device_id,
-		.channelCount = appconfig.pcm_channels,
-		.suggestedLatency = Pa_GetDeviceInfo(appconfig.pcm_device_id)->defaultLowInputLatency,
+		.device = pcm_device_id,
+		.channelCount = pcm_channels,
+		.suggestedLatency = Pa_GetDeviceInfo(pcm_device_id)->defaultLowInputLatency,
 		.hostApiSpecificStreamInfo = NULL,
 	};
 
-	if ((pa_err = Pa_OpenStream(&pa_stream, &pa_params, NULL, appconfig.pcm_rate,
+	if ((pa_err = Pa_OpenStream(&pa_stream, &pa_params, NULL, pcm_rate,
 					READER_FRAMES, paClipOff, pa_capture_callback, NULL)) != paNoError) {
 		error("Couldn't open PortAudio stream: %s", Pa_GetErrorText(pa_err));
 		return EXIT_FAILURE;
@@ -671,7 +602,7 @@ int main(int argc, char *argv[]) {
 	snd_pcm_t *pcm;
 	char *msg;
 
-	if ((err = snd_pcm_open(&pcm, appconfig.pcm_device, SND_PCM_STREAM_CAPTURE, 0)) != 0) {
+	if ((err = snd_pcm_open(&pcm, pcm_device, SND_PCM_STREAM_CAPTURE, 0)) != 0) {
 		error("Couldn't open PCM device: %s", snd_strerror(err));
 		return EXIT_FAILURE;
 	}
@@ -688,7 +619,37 @@ int main(int argc, char *argv[]) {
 
 #endif
 
-	if (appconfig.verbose)
+	switch (format) {
+	case WRITER_FORMAT_RAW:
+		writer = writer_raw_new(pcm_channels);
+		break;
+#if ENABLE_SNDFILE
+	case WRITER_FORMAT_WAV:
+		writer = writer_wav_new(pcm_channels, pcm_rate);
+		break;
+#endif
+#if ENABLE_MP3LAME
+	case WRITER_FORMAT_MP3:
+		writer = writer_mp3_new(pcm_channels, pcm_rate,
+				bitrate_min, bitrate_max, banner);
+		if (verbose >= 2)
+			writer_mp3_print_internals(writer);
+		break;
+#endif
+#if ENABLE_VORBIS
+	case WRITER_FORMAT_OGG:
+		writer = writer_ogg_new(pcm_channels, pcm_rate,
+				bitrate_min, bitrate_nom, bitrate_max, banner);
+		break;
+#endif
+	}
+
+	if (writer == NULL) {
+		error("Couldn't create writer: %s", strerror(errno));
+		return EXIT_FAILURE;
+	}
+
+	if (verbose >= 1)
 		print_audio_info();
 
 	struct sigaction sigact = { .sa_handler = main_loop_stop, .sa_flags = SA_RESETHAND };
@@ -723,14 +684,14 @@ int main(int argc, char *argv[]) {
 #endif
 
 	/* Gracefully stop the processing thread. */
-	pthread_mutex_lock(&appconfig.mutex);
-	appconfig.active = false;
-	pthread_mutex_unlock(&appconfig.mutex);
-	pthread_cond_signal(&appconfig.ready_cond);
+	pthread_mutex_lock(&mutex);
+	active = false;
+	pthread_mutex_unlock(&mutex);
+	pthread_cond_signal(&ready_cond);
 
 	pthread_join(thread_process_id, NULL);
 
-	if (appconfig.signal_meter)
+	if (signal_meter)
 		printf("\n");
 
 	return EXIT_SUCCESS;
