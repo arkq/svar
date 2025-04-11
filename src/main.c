@@ -28,50 +28,20 @@
 # include <alsa/asoundlib.h>
 #endif
 
+#include "debug.h"
+#include "writer.h"
 #if ENABLE_MP3LAME
-# include "writer_mp3lame.h"
+# include "writer-mp3.h"
 #endif
 #if ENABLE_SNDFILE
-# include "writer_sndfile.h"
+# include "writer-wav.h"
 #endif
 #if ENABLE_VORBIS
-# include "writer_vorbis.h"
+# include "writer-ogg.h"
 #endif
-
-#include "debug.h"
 
 #define READER_FRAMES 512 * 8
 #define PROCESSING_FRAMES READER_FRAMES * 16
-
-enum output_format {
-	FORMAT_RAW = 0,
-#if ENABLE_SNDFILE
-	FORMAT_WAV,
-#endif
-#if ENABLE_MP3LAME
-	FORMAT_MP3,
-#endif
-#if ENABLE_VORBIS
-	FORMAT_OGG,
-#endif
-};
-
-/* available output formats */
-static const struct {
-	enum output_format format;
-	const char *name;
-} output_formats[] = {
-	{ FORMAT_RAW, "raw" },
-#if ENABLE_MP3LAME
-	{ FORMAT_MP3, "mp3" },
-#endif
-#if ENABLE_SNDFILE
-	{ FORMAT_WAV, "wav" },
-#endif
-#if ENABLE_VORBIS
-	{ FORMAT_OGG, "ogg" },
-#endif
-};
 
 /* global application settings */
 static struct appconfig_t {
@@ -90,10 +60,12 @@ static struct appconfig_t {
 	/* output verboseness level */
 	int verbose;
 
-	/* strftime() format for output file */
-	const char *output;
+	/* selected output format */
+	enum writer_format format;
+	const char * format_name;
 
-	enum output_format output_format;
+	/* strftime() format for output file */
+	const char * output;
 
 	int threshold;    /* % of max signal */
 	int fadeout_time; /* in ms */
@@ -128,19 +100,18 @@ static struct appconfig_t {
 	.signal_meter = false,
 	.verbose = 0,
 
-	/* strftime() format string for output file */
-	.output = "rec-%d-%H:%M:%S",
-
 	/* default output format */
 #if ENABLE_SNDFILE
-	.output_format = FORMAT_WAV,
+	.format = WRITER_FORMAT_WAV,
 #elif ENABLE_VORBIS
-	.output_format = FORMAT_OGG,
+	.format = WRITER_FORMAT_OGG,
 #elif ENABLE_MP3LAME
-	.output_format = FORMAT_MP3,
+	.format = WWRITER_FORMAT_MP3,
 #else
-	.output_format = FORMAT_RAW,
+	.format = WRITER_FORMAT_RAW,
 #endif
+	/* strftime() format string for output file */
+	.output = "rec-%d-%H:%M:%S",
 
 	.threshold = 2,
 	.fadeout_time = 500,
@@ -209,15 +180,6 @@ fail:
 }
 #endif
 
-/* Return the name of a given output format. */
-static const char *get_output_format_name(enum output_format format) {
-	size_t i;
-	for (i = 0; i < sizeof(output_formats) / sizeof(*output_formats); i++)
-		if (output_formats[i].format == format)
-			return output_formats[i].name;
-	return NULL;
-}
-
 /* Print some information about the audio device and its configuration. */
 static void print_audio_info(void) {
 	printf("Selected PCM device: %s\n"
@@ -226,16 +188,15 @@ static void print_audio_info(void) {
 			appconfig.pcm_rate,
 			appconfig.pcm_channels, appconfig.pcm_channels > 1 ? "s" : "");
 	if (!appconfig.signal_meter)
-		printf("Output file format: %s\n",
-				get_output_format_name(appconfig.output_format));
+		printf("Output file format: %s\n", appconfig.format_name);
 #if ENABLE_MP3LAME
-	if (appconfig.output_format == FORMAT_MP3)
+	if (appconfig.format == WRITER_FORMAT_MP3)
 		printf("Output bit rate [min, max]: %d, %d kbit/s\n",
 				appconfig.bitrate_min / 1000,
 				appconfig.bitrate_max / 1000);
 #endif
 #if ENABLE_VORBIS
-	if (appconfig.output_format == FORMAT_OGG)
+	if (appconfig.format == WRITER_FORMAT_OGG)
 		printf("Output bit rate [min, nominal, max]: %d, %d, %d kbit/s\n",
 				appconfig.bitrate_min / 1000,
 				appconfig.bitrate_nom / 1000,
@@ -401,6 +362,7 @@ static void *processing_thread(void *arg) {
 	if (appconfig.signal_meter)
 		return NULL;
 
+	struct writer * writer = NULL;
 	int16_t *buffer = malloc(sizeof(int16_t) * appconfig.pcm_channels * PROCESSING_FRAMES);
 	size_t frames = 0;
 
@@ -413,43 +375,36 @@ static void *processing_thread(void *arg) {
 	char file_name_tmp[192];
 	char file_name[192 + 4];
 
-	FILE *fp = NULL;
-
+	switch (appconfig.format) {
+	case WRITER_FORMAT_RAW:
+		writer = writer_raw_new(appconfig.pcm_channels);
+		break;
 #if ENABLE_SNDFILE
-	struct writer_sndfile *writer_sndfile = NULL;
-	if (appconfig.output_format == FORMAT_WAV) {
-		if ((writer_sndfile = writer_sndfile_init(appconfig.pcm_channels, appconfig.pcm_rate,
-						SF_FORMAT_WAV | SF_FORMAT_PCM_16)) == NULL) {
-			error("Couldn't initialize sndfile writer: %s", strerror(errno));
-			exit(EXIT_FAILURE);
-		}
-	}
+	case WRITER_FORMAT_WAV:
+		writer = writer_wav_new(appconfig.pcm_channels, appconfig.pcm_rate);
+		break;
 #endif
-
 #if ENABLE_MP3LAME
-	struct writer_mp3lame *writer_mp3lame = NULL;
-	if (appconfig.output_format == FORMAT_MP3) {
-		if ((writer_mp3lame = writer_mp3lame_init(appconfig.pcm_channels, appconfig.pcm_rate,
-						appconfig.bitrate_min, appconfig.bitrate_max, appconfig.banner)) == NULL) {
-			error("Couldn't initialize mp3lame writer: %s", strerror(errno));
-			exit(EXIT_FAILURE);
-		}
+	case WRITER_FORMAT_MP3:
+		writer = writer_mp3_new(appconfig.pcm_channels, appconfig.pcm_rate,
+				appconfig.bitrate_min, appconfig.bitrate_max, appconfig.banner);
 		if (appconfig.verbose >= 2)
-			lame_print_internals(writer_mp3lame->gfp);
-	}
+			writer_mp3_print_internals(writer);
+		break;
 #endif
-
 #if ENABLE_VORBIS
-	struct writer_vorbis *writer_vorbis = NULL;
-	if (appconfig.output_format == FORMAT_OGG) {
-		if ((writer_vorbis = writer_vorbis_init(appconfig.pcm_channels, appconfig.pcm_rate,
-						appconfig.bitrate_min, appconfig.bitrate_nom, appconfig.bitrate_max,
-						appconfig.banner)) == NULL) {
-			error("Couldn't initialize vorbis writer: %s", strerror(errno));
-			exit(EXIT_FAILURE);
-		}
-	}
+	case WRITER_FORMAT_OGG:
+		writer = writer_ogg_new(appconfig.pcm_channels, appconfig.pcm_rate,
+				appconfig.bitrate_min, appconfig.bitrate_nom, appconfig.bitrate_max,
+				appconfig.banner);
+		break;
 #endif
+	}
+
+	if (writer == NULL) {
+		error("Couldn't create writer: %s", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
 
 	while (appconfig.active) {
 
@@ -479,94 +434,28 @@ static void *processing_thread(void *arg) {
 			tmp_t_time = time(NULL);
 			localtime_r(&tmp_t_time, &tmp_tm_time);
 
-			strftime(file_name_tmp, sizeof(file_name_tmp), appconfig.output, &tmp_tm_time);
+			strftime(file_name_tmp, sizeof(file_name_tmp),
+					appconfig.output, &tmp_tm_time);
 			snprintf(file_name, sizeof(file_name), "%s.%s",
-					file_name_tmp, get_output_format_name(appconfig.output_format));
+					file_name_tmp, appconfig.format_name);
 
 			if (appconfig.verbose)
 				info("Creating new output file: %s", file_name);
 
 			/* initialize new file for selected encoder */
-			switch (appconfig.output_format) {
-#if ENABLE_SNDFILE
-			case FORMAT_WAV:
-				if (writer_sndfile_open(writer_sndfile, file_name) != -1)
-					break;
-				error("Couldn't open sndfile writer: %s", strerror(errno));
-				goto fail;
-#endif
-#if ENABLE_MP3LAME
-			case FORMAT_MP3:
-				if (writer_mp3lame_open(writer_mp3lame, file_name) != -1)
-					break;
-				error("Couldn't open mp3lame writer: %s", strerror(errno));
-				goto fail;
-#endif
-#if ENABLE_VORBIS
-			case FORMAT_OGG:
-				if (writer_vorbis_open(writer_vorbis, file_name) != -1)
-					break;
-				error("Couldn't open vorbis writer: %s", strerror(errno));
-				goto fail;
-#endif
-			case FORMAT_RAW:
-				if (fp != NULL)
-					fclose(fp);
-				if ((fp = fopen(file_name, "w")) != NULL)
-					break;
-				error("Couldn't create output file: %s", strerror(errno));
+			if (writer->open(writer, file_name) == -1) {
+				error("Couldn't open writer: %s", strerror(errno));
 				goto fail;
 			}
 
 		}
 
-		/* use selected encoder for data processing */
-		switch (appconfig.output_format) {
-#if ENABLE_SNDFILE
-		case FORMAT_WAV:
-			writer_sndfile_write(writer_sndfile, buffer, frames);
-			break;
-#endif
-#if ENABLE_MP3LAME
-		case FORMAT_MP3:
-			writer_mp3lame_write(writer_mp3lame, buffer, frames);
-			break;
-#endif
-#if ENABLE_VORBIS
-		case FORMAT_OGG:
-			writer_vorbis_write(writer_vorbis, buffer, frames);
-			break;
-#endif
-		case FORMAT_RAW:
-			fwrite(buffer, sizeof(int16_t) * appconfig.pcm_channels, frames, fp);
-		}
+		writer->write(writer, buffer, frames);
 
 	}
 
 fail:
-
-	/* clean up routines for selected encoder */
-	switch (appconfig.output_format) {
-#if ENABLE_SNDFILE
-	case FORMAT_WAV:
-		writer_sndfile_free(writer_sndfile);
-		break;
-#endif
-#if ENABLE_MP3LAME
-	case FORMAT_MP3:
-		writer_mp3lame_free(writer_mp3lame);
-		break;
-#endif
-#if ENABLE_VORBIS
-	case FORMAT_OGG:
-		writer_vorbis_free(writer_vorbis);
-		break;
-#endif
-	case FORMAT_RAW:
-		if (fp != NULL)
-			fclose(fp);
-	}
-
+	writer->free(writer);
 	free(buffer);
 	return 0;
 }
@@ -601,6 +490,8 @@ int main(int argc, char *argv[]) {
 	if ((appconfig.pcm_device_id = Pa_GetDefaultInputDevice()) == paNoDevice)
 		warn("Couldn't get default input PortAudio device");
 #endif
+
+	appconfig.format_name = writer_format_to_string(appconfig.format);
 
 	/* arguments parser */
 	while ((opt = getopt_long(argc, argv, opts, longopts, NULL)) != -1)
@@ -640,7 +531,7 @@ int main(int argc, char *argv[]) {
 					appconfig.threshold,
 					appconfig.fadeout_time,
 					appconfig.split_time,
-					get_output_format_name(appconfig.output_format),
+					appconfig.format_name,
 					appconfig.output);
 			return EXIT_SUCCESS;
 
@@ -675,20 +566,39 @@ int main(int argc, char *argv[]) {
 			appconfig.pcm_rate = abs(atoi(optarg));
 			break;
 
-		case 'o' /* --out-format */ :
-			for (i = 0; i < sizeof(output_formats) / sizeof(*output_formats); i++)
-				if (strcasecmp(output_formats[i].name, optarg) == 0) {
-					appconfig.output_format = output_formats[i].format;
+		case 'o' /* --out-format */ : {
+
+			const enum writer_format formats[] = {
+				WRITER_FORMAT_RAW,
+#if ENABLE_MP3LAME
+				WRITER_FORMAT_MP3,
+#endif
+#if ENABLE_SNDFILE
+				WRITER_FORMAT_WAV,
+#endif
+#if ENABLE_VORBIS
+				WRITER_FORMAT_OGG,
+#endif
+			};
+
+			for (i = 0; i < sizeof(formats) / sizeof(*formats); i++)
+				if (strcasecmp(writer_format_to_string(formats[i]), optarg) == 0) {
+					appconfig.format_name = writer_format_to_string(formats[i]);
+					appconfig.format = formats[i];
 					break;
 				}
-			if (i == sizeof(output_formats) / sizeof(*output_formats)) {
-				fprintf(stderr, "error: Unknown output format [");
-				for (i = 0; i < sizeof(output_formats) / sizeof(*output_formats); i++)
-					fprintf(stderr, "%s%s", i != 0 ? ", " : "", output_formats[i].name);
-				fprintf(stderr, "]: %s\n", optarg);
+
+			if (i == sizeof(formats) / sizeof(*formats)) {
+				fprintf(stderr, "error: Unknown output format {");
+				for (i = 0; i < sizeof(formats) / sizeof(*formats); i++) {
+					const char * name = writer_format_to_string(formats[i]);
+					fprintf(stderr, "%s%s", i != 0 ? ", " : "", name);
+				}
+				fprintf(stderr, "}: %s\n", optarg);
 				return EXIT_FAILURE;
 			}
-			break;
+
+		} break;
 
 		case 'l' /* --sig-level */ :
 			appconfig.threshold = atoi(optarg);
@@ -735,7 +645,7 @@ int main(int argc, char *argv[]) {
 	appconfig.buffer_read_len = 0;
 
 	if (appconfig.buffer == NULL) {
-		error("Failed to allocate memory for read buffer");
+		error("Couldn't create reader buffer: %s", strerror(errno));
 		return EXIT_FAILURE;
 	}
 

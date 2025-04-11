@@ -33,10 +33,9 @@ include_directories(${PROJECT_BINARY_DIR})
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 find_package(PkgConfig REQUIRED)
 
-set(SRCS
+add_executable(svar
+	src/writer.c
 	src/main.c)
-
-add_executable(svar ${SRCS})
 
 target_link_libraries(svar m)
 
@@ -53,19 +52,19 @@ endif()
 
 if(ENABLE_SNDFILE)
 	pkg_check_modules(SNDFile REQUIRED IMPORTED_TARGET sndfile)
-	target_sources(svar PRIVATE src/writer_sndfile.c)
+	target_sources(svar PRIVATE src/writer-wav.c)
 	target_link_libraries(svar PkgConfig::SNDFile)
 endif()
 
 if(ENABLE_MP3LAME)
 	find_package(Mp3Lame REQUIRED)
-	target_sources(svar PRIVATE src/writer_mp3lame.c)
+	target_sources(svar PRIVATE src/writer-mp3.c)
 	target_link_libraries(svar Mp3Lame::Mp3Lame)
 endif()
 
 if(ENABLE_VORBIS)
 	pkg_check_modules(VorbisOgg REQUIRED IMPORTED_TARGET vorbis vorbisenc ogg)
-	target_sources(svar PRIVATE src/writer_vorbis.c)
+	target_sources(svar PRIVATE src/writer-ogg.c)
 	target_link_libraries(svar PkgConfig::VorbisOgg)
 endif()
 
