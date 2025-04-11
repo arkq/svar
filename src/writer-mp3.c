@@ -39,6 +39,7 @@ static int writer_mp3_open(struct writer * writer, const char * pathname) {
 	int len = lame_get_id3v2_tag(w->gfp, w->mp3buf, sizeof(w->mp3buf));
 	fwrite(w->mp3buf, 1, len, w->fp);
 
+	writer->opened = true;
 	return 0;
 }
 
@@ -50,6 +51,7 @@ static ssize_t writer_mp3_write(struct writer * writer, int16_t * buffer, size_t
 
 static void writer_mp3_close(struct writer * writer) {
 	struct writer_mp3 * w = writer->w;
+	writer->opened = false;
 	if (w->fp == NULL)
 		return;
 	int len = lame_encode_flush(w->gfp, w->mp3buf, sizeof(w->mp3buf));

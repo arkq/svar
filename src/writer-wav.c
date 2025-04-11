@@ -29,11 +29,13 @@ static int writer_wav_open(struct writer * writer, const char * pathname) {
 		return -1;
 	}
 
+	writer->opened = true;
 	return 0;
 }
 
 static void writer_wav_close(struct writer * writer) {
 	struct writer_wav * w = writer->w;
+	writer->opened = false;
 	if (w->sf != NULL) {
 		sf_close(w->sf);
 		w->sf = NULL;

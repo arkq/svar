@@ -12,6 +12,7 @@
 # include "config.h"
 #endif
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
@@ -31,6 +32,7 @@ enum writer_format {
 
 struct writer {
 	enum writer_format format;
+	bool opened;
 	/* implementation specific functions */
 	int (*open)(struct writer * w, const char * pathname);
 	ssize_t (*write)(struct writer * w, int16_t * buffer, size_t frames);

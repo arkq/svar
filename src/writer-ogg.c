@@ -71,11 +71,13 @@ static int writer_ogg_open(struct writer * writer, const char * pathname) {
 	ogg_stream_packetin(&w->ogg_s, &w->ogg_p_comm);
 	ogg_stream_packetin(&w->ogg_s, &w->ogg_p_code);
 
+	writer->opened = true;
 	return 0;
 }
 
 static void writer_ogg_close(struct writer * writer) {
 	struct writer_ogg * w = writer->w;
+	writer->opened = false;
 
 	ogg_page o_page;
 	size_t len = 0;

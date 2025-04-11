@@ -79,7 +79,7 @@ static int split_time = 0; /* disable splitting by default */
 
 /* Reader/writer synchronization. */
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t ready_cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
 static bool active = true;
 static int16_t * pcm_buffer;
@@ -89,6 +89,21 @@ static size_t pcm_buffer_size;
 static void main_loop_stop(int sig) {
 	active = false;
 	(void)sig;
+}
+
+static const char * get_output_file_name(void) {
+
+	struct tm now;
+	const time_t tmp = time(NULL);
+	localtime_r(&tmp, &now);
+
+	char base[192];
+	static char name[sizeof(base) + 4];
+	strftime(base, sizeof(base), template, &now);
+	snprintf(name, sizeof(name), "%s.%s",
+			base, writer_format_to_string(writer->format));
+
+	return name;
 }
 
 #if !ENABLE_PORTAUDIO
@@ -252,10 +267,10 @@ static void process_audio_S16_LE(const int16_t *buffer, size_t frames, int chann
 
 		pthread_mutex_unlock(&mutex);
 
-		/* Notify the processing thread that new data are available. */
-		pthread_cond_signal(&ready_cond);
-
 	}
+
+	/* Wake up processing thread to process data if any. */
+	pthread_cond_signal(&cond);
 
 }
 
@@ -313,6 +328,12 @@ fail:
 
 #endif
 
+static void writer_close(void) {
+	if (verbose >= 1)
+		info("Closing current output file");
+	writer->close(writer);
+}
+
 /* Audio signal data processing thread. */
 static void *processing_thread(void *arg) {
 	(void)arg;
@@ -323,64 +344,56 @@ static void *processing_thread(void *arg) {
 	int16_t *buffer = malloc(sizeof(int16_t) * pcm_channels * PROCESSING_FRAMES);
 	size_t frames = 0;
 
-	struct timespec current_time;
-	struct timespec previous_time = { 0 };
-	struct tm tmp_tm_time;
-	time_t tmp_t_time;
-	bool create_new_output = true;
-	/* it must contain a prefix and the timestamp */
-	char file_name_tmp[192];
-	char file_name[192 + 4];
+	struct timespec ts_last_write = { 0 };
+	struct timespec ts_now;
 
 	while (active) {
 
-		/* copy data from the reader buffer into our internal one */
 		pthread_mutex_lock(&mutex);
-		while (active && pcm_buffer_read_len == 0)
-			pthread_cond_wait(&ready_cond, &mutex);
+
+		while (active && pcm_buffer_read_len == 0) {
+
+			/* Wait for the reader to fill the buffer. */
+			pthread_cond_wait(&cond, &mutex);
+
+			if (split_time && writer->opened) {
+				/* Check if split time was reached, if so, close writer
+				 * and schedule opening of a new one. */
+				clock_gettime(CLOCK_MONOTONIC_RAW, &ts_now);
+				if (ts_now.tv_sec - ts_last_write.tv_sec > split_time) {
+					writer_close();
+				}
+			}
+
+		}
+
+		/* Copy data from the reader buffer into our internal one. */
 		memcpy(buffer, pcm_buffer, sizeof(int16_t) * pcm_buffer_read_len);
 		frames = pcm_buffer_read_len / pcm_channels;
 		pcm_buffer_read_len = 0;
+
 		pthread_mutex_unlock(&mutex);
 
 		if (frames == 0)
 			continue;
 
-		/* check if new file should be created (activity time based) */
-		clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
-		if (split_time &&
-				(current_time.tv_sec - previous_time.tv_sec) > split_time)
-			create_new_output = true;
-		memcpy(&previous_time, &current_time, sizeof(previous_time));
-
-		/* create new output file if needed */
-		if (create_new_output) {
-			create_new_output = false;
-
-			tmp_t_time = time(NULL);
-			localtime_r(&tmp_t_time, &tmp_tm_time);
-
-			strftime(file_name_tmp, sizeof(file_name_tmp),
-					template, &tmp_tm_time);
-			snprintf(file_name, sizeof(file_name), "%s.%s",
-					file_name_tmp, writer_format_to_string(writer->format));
-
+		if (!writer->opened) {
+			const char * name = get_output_file_name();
 			if (verbose >= 1)
-				info("Creating new output file: %s", file_name);
-
-			/* initialize new file for selected encoder */
-			if (writer->open(writer, file_name) == -1) {
+				info("Creating new output file: %s", name);
+			if (writer->open(writer, name) == -1) {
 				error("Couldn't open writer: %s", strerror(errno));
 				goto fail;
 			}
-
 		}
 
+		clock_gettime(CLOCK_MONOTONIC_RAW, &ts_last_write);
 		writer->write(writer, buffer, frames);
 
 	}
 
 fail:
+	writer_close();
 	writer->free(writer);
 	free(buffer);
 	return 0;
@@ -687,7 +700,7 @@ int main(int argc, char *argv[]) {
 	pthread_mutex_lock(&mutex);
 	active = false;
 	pthread_mutex_unlock(&mutex);
-	pthread_cond_signal(&ready_cond);
+	pthread_cond_signal(&cond);
 
 	pthread_join(thread_process_id, NULL);
 

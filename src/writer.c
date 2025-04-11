@@ -23,6 +23,7 @@ static int writer_raw_open(struct writer * writer, const char * pathname) {
 	if ((w->f = fopen(pathname, "w")) != NULL)
 		return -1;
 
+	writer->opened = true;
 	return 0;
 }
 
@@ -33,6 +34,7 @@ static ssize_t writer_raw_write(struct writer * writer, int16_t * buffer, size_t
 
 static void writer_raw_close(struct writer * writer) {
 	struct writer_raw * w = writer->w;
+	writer->opened = false;
 	if (w->f != NULL) {
 		fclose(w->f);
 		w->f = NULL;
