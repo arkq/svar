@@ -13,7 +13,7 @@
 
 #include <lame/lame.h>
 
-#include "debug.h"
+#include "log.h"
 #include "writer.h"
 
 struct writer_mp3 {
@@ -79,6 +79,7 @@ struct writer * writer_mp3_new(unsigned int channels, unsigned int sampling,
 		return NULL;
 
 	writer->format = WRITER_FORMAT_MP3;
+	writer->opened = false;
 	writer->open = writer_mp3_open;
 	writer->write = writer_mp3_write;
 	writer->close = writer_mp3_close;

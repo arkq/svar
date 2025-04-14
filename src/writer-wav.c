@@ -12,7 +12,7 @@
 
 #include <sndfile.h>
 
-#include "debug.h"
+#include "log.h"
 #include "writer.h"
 
 struct writer_wav {
@@ -62,6 +62,7 @@ struct writer * writer_wav_new(unsigned int channels, unsigned int sampling) {
 		return NULL;
 
 	writer->format = WRITER_FORMAT_WAV;
+	writer->opened = false;
 	writer->open = writer_wav_open;
 	writer->write = writer_wav_write;
 	writer->close = writer_wav_close;

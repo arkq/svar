@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/param.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -28,7 +29,8 @@
 # include <alsa/asoundlib.h>
 #endif
 
-#include "debug.h"
+#include "log.h"
+#include "rbuf.h"
 #include "writer.h"
 #if ENABLE_MP3LAME
 # include "writer-mp3.h"
@@ -82,13 +84,15 @@ static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
 static bool active = true;
-static int16_t * pcm_buffer;
-static size_t pcm_buffer_read_len;
-static size_t pcm_buffer_size;
+static struct rbuf rb;
 
 static void main_loop_stop(int sig) {
 	active = false;
 	(void)sig;
+}
+
+static time_t ts_diff_ms(const struct timespec * ts1, const struct timespec * ts2) {
+	return (ts1->tv_sec - ts2->tv_sec) * 1000 + (ts1->tv_nsec - ts2->tv_nsec) / 1000000;
 }
 
 static const char * get_output_file_name(void) {
@@ -216,8 +220,7 @@ static void peak_check_S16_LE(const int16_t *buffer, size_t frames, int channels
 	*rms = ceil(sqrt((double)sum2 / frames));
 }
 
-/* Process incoming audio frames. */
-static void process_audio_S16_LE(const int16_t *buffer, size_t frames, int channels) {
+static bool check_activation_threshold(const int16_t * buffer, size_t samples) {
 
 	static struct timespec peak_time = { 0 };
 	struct timespec current_time;
@@ -225,14 +228,15 @@ static void process_audio_S16_LE(const int16_t *buffer, size_t frames, int chann
 	int16_t signal_peak;
 	int16_t signal_rms;
 
-	peak_check_S16_LE(buffer, frames, channels, &signal_peak, &signal_rms);
+	const size_t frames = samples / pcm_channels;
+	peak_check_S16_LE(buffer, frames, pcm_channels, &signal_peak, &signal_rms);
 
 	if (signal_meter) {
 		/* dump current peak and RMS values to the stdout */
 		printf("\rsignal peak [%%]: %3u, signal RMS [%%]: %3u\r",
 				signal_peak * 100 / 0x7ffe, signal_rms * 100 / 0x7ffe);
 		fflush(stdout);
-		return;
+		return false;
 	}
 
 	/* if the max peak in the buffer is greater than the threshold, update
@@ -241,50 +245,54 @@ static void process_audio_S16_LE(const int16_t *buffer, size_t frames, int chann
 		clock_gettime(CLOCK_MONOTONIC_RAW, &peak_time);
 
 	clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
-	if ((current_time.tv_sec - peak_time.tv_sec) * 1000 +
-			(current_time.tv_nsec - peak_time.tv_nsec) / 1000000 < fadeout_time) {
+	if (ts_diff_ms(&current_time, &peak_time) < fadeout_time)
+		return true;
 
-		pthread_mutex_lock(&mutex);
-
-		if (pcm_buffer_read_len == pcm_buffer_size) {
-			/* Drop the current buffer, so we can process incoming data. */
-			if (verbose >= 1)
-				warn("Reader buffer overrun");
-			pcm_buffer_read_len = 0;
-		}
-
-		/* NOTE: The size of data returned by the pcm_read in the blocking mode is
-		 *       always equal to the requested size. So, if the reader buffer (the
-		 *       external one) is an integer multiplication of our internal buffer,
-		 *       there is no need for any fancy boundary check. However, this might
-		 *       not be true if someone is using CPU profiling tool, like cpulimit. */
-		memcpy(&pcm_buffer[pcm_buffer_read_len], buffer,
-				sizeof(int16_t) * frames * pcm_channels);
-		pcm_buffer_read_len += frames * pcm_channels;
-
-		/* dump reader buffer usage */
-		debug("Buffer usage: %zd out of %zd", pcm_buffer_read_len, pcm_buffer_size);
-
-		pthread_mutex_unlock(&mutex);
-
-	}
-
-	/* Wake up processing thread to process data if any. */
-	pthread_cond_signal(&cond);
-
+	return false;
 }
 
 #if ENABLE_PORTAUDIO
 
 /* Callback function for PortAudio capture. */
-static int pa_capture_callback(const void *inputBuffer, void *outputBuffer,
-		unsigned long framesPerBuffer, const PaStreamCallbackTimeInfo* timeInfo,
-		PaStreamCallbackFlags statusFlags, void *userData) {
+static int pa_capture_callback(const void * inputBuffer, void * outputBuffer,
+		unsigned long framesPerBuffer, const PaStreamCallbackTimeInfo * timeInfo,
+		PaStreamCallbackFlags statusFlags, void * userData) {
 	(void)outputBuffer;
 	(void)timeInfo;
 	(void)statusFlags;
 	(void)userData;
-	process_audio_S16_LE(inputBuffer, framesPerBuffer, pcm_channels);
+
+	unsigned long samplesPerBuffer = framesPerBuffer * pcm_channels;
+	if (check_activation_threshold(inputBuffer, samplesPerBuffer)) {
+
+		pthread_mutex_lock(&mutex);
+
+		while (samplesPerBuffer > 0) {
+			const size_t rb_wr_capacity_samples = rbuf_write_linear_capacity(&rb);
+			const size_t samples = MIN(samplesPerBuffer, rb_wr_capacity_samples);
+
+			if (rb_wr_capacity_samples == 0) {
+				if (verbose >= 1)
+					warn("PCM buffer overrun: %s", "Ring buffer full");
+				break;
+			}
+
+			memcpy(rb.tail, inputBuffer, samples * sizeof(int16_t));
+			rbuf_write_linear_commit(&rb, samples);
+
+			inputBuffer = (const int16_t *)inputBuffer + samples;
+			samplesPerBuffer -= samples;
+
+		}
+
+		pthread_mutex_unlock(&mutex);
+
+	}
+
+	/* Wake up the processing thread to process audio or to close
+	 * the current writer if split time was exceeded. */
+	pthread_cond_signal(&cond);
+
 	return active ? paContinue : paComplete;
 }
 
@@ -292,18 +300,16 @@ static int pa_capture_callback(const void *inputBuffer, void *outputBuffer,
 
 /* Thread function for ALSA capture. */
 static void *alsa_capture_thread(void *arg) {
-
-	int16_t *buffer;
-	if ((buffer = malloc(sizeof(int16_t) * pcm_channels * READER_FRAMES)) == NULL) {
-		error("Couldn't allocate memory for capturing PCM: %s", strerror(errno));
-		return NULL;
-	}
-
-	snd_pcm_sframes_t frames;
-	snd_pcm_t *pcm = arg;
+	snd_pcm_t * pcm = arg;
 
 	while (active) {
-		if ((frames = snd_pcm_readi(pcm, buffer, READER_FRAMES)) < 0)
+
+		pthread_mutex_lock(&mutex);
+		const size_t samples = rbuf_write_linear_capacity(&rb);
+		pthread_mutex_unlock(&mutex);
+
+		snd_pcm_sframes_t frames = samples / pcm_channels;
+		if ((frames = snd_pcm_readi(pcm, rb.tail, MIN(frames, READER_FRAMES))) < 0)
 			switch (frames) {
 			case -EPIPE:
 			case -ESTRPIPE:
@@ -313,26 +319,28 @@ static void *alsa_capture_thread(void *arg) {
 				continue;
 			case -ENODEV:
 				error("PCM read error: %s", "Device disconnected");
-				goto fail;
+				return NULL;
 			default:
 				error("PCM read error: %s", snd_strerror(frames));
 				continue;
 			}
-		process_audio_S16_LE(buffer, frames, pcm_channels);
+
+		if (check_activation_threshold(rb.tail, frames * pcm_channels)) {
+			pthread_mutex_lock(&mutex);
+			rbuf_write_linear_commit(&rb, frames * pcm_channels);
+			pthread_mutex_unlock(&mutex);
+		}
+
+		/* Wake up the processing thread to process audio or to close
+		 * the current writer if split time was exceeded. */
+		pthread_cond_signal(&cond);
+
 	}
 
-fail:
-	free(buffer);
 	return NULL;
 }
 
 #endif
-
-static void writer_close(void) {
-	if (verbose >= 1)
-		info("Closing current output file");
-	writer->close(writer);
-}
 
 /* Audio signal data processing thread. */
 static void *processing_thread(void *arg) {
@@ -341,41 +349,33 @@ static void *processing_thread(void *arg) {
 	if (signal_meter)
 		return NULL;
 
-	int16_t *buffer = malloc(sizeof(int16_t) * pcm_channels * PROCESSING_FRAMES);
-	size_t frames = 0;
-
 	struct timespec ts_last_write = { 0 };
 	struct timespec ts_now;
+	size_t samples = 0;
 
-	while (active) {
+	while (true) {
 
 		pthread_mutex_lock(&mutex);
 
-		while (active && pcm_buffer_read_len == 0) {
-
+		while (active && (samples = rbuf_read_linear_capacity(&rb)) == 0) {
 			/* Wait for the reader to fill the buffer. */
 			pthread_cond_wait(&cond, &mutex);
-
+			/* If split time is enabled and writer is opened,
+			 * check if we need to close the current writer. */
 			if (split_time && writer->opened) {
-				/* Check if split time was reached, if so, close writer
-				 * and schedule opening of a new one. */
 				clock_gettime(CLOCK_MONOTONIC_RAW, &ts_now);
-				if (ts_now.tv_sec - ts_last_write.tv_sec > split_time) {
-					writer_close();
+				if (ts_diff_ms(&ts_now, &ts_last_write) > split_time * 1000) {
+					if (verbose >= 1)
+						info("Closing current output file");
+					writer->close(writer);
 				}
 			}
-
 		}
-
-		/* Copy data from the reader buffer into our internal one. */
-		memcpy(buffer, pcm_buffer, sizeof(int16_t) * pcm_buffer_read_len);
-		frames = pcm_buffer_read_len / pcm_channels;
-		pcm_buffer_read_len = 0;
 
 		pthread_mutex_unlock(&mutex);
 
-		if (frames == 0)
-			continue;
+		if (!active)
+			break;
 
 		if (!writer->opened) {
 			const char * name = get_output_file_name();
@@ -388,14 +388,18 @@ static void *processing_thread(void *arg) {
 		}
 
 		clock_gettime(CLOCK_MONOTONIC_RAW, &ts_last_write);
-		writer->write(writer, buffer, frames);
+		writer->write(writer, rb.head, samples / pcm_channels);
+
+		pthread_mutex_lock(&mutex);
+		rbuf_read_linear_commit(&rb, samples);
+		pthread_mutex_unlock(&mutex);
 
 	}
 
 fail:
-	writer_close();
+	if (writer->opened && verbose >= 1)
+		info("Closing current output file");
 	writer->free(writer);
-	free(buffer);
 	return 0;
 }
 
@@ -583,16 +587,6 @@ int main(int argc, char *argv[]) {
 	pthread_t thread_process_id;
 	int err;
 
-	/* initialize reader data */
-	pcm_buffer_size = pcm_channels * PROCESSING_FRAMES;
-	pcm_buffer = malloc(sizeof(int16_t) * pcm_buffer_size);
-	pcm_buffer_read_len = 0;
-
-	if (pcm_buffer == NULL) {
-		error("Couldn't create reader buffer: %s", strerror(errno));
-		return EXIT_FAILURE;
-	}
-
 #if ENABLE_PORTAUDIO
 
 	PaStream *pa_stream = NULL;
@@ -664,6 +658,11 @@ int main(int argc, char *argv[]) {
 
 	if (verbose >= 1)
 		print_audio_info();
+
+	if (rbuf_init(&rb, pcm_channels * PROCESSING_FRAMES, sizeof(int16_t)) != 0) {
+		error("Couldn't create ring buffer: %s", strerror(errno));
+		return EXIT_FAILURE;
+	}
 
 	struct sigaction sigact = { .sa_handler = main_loop_stop, .sa_flags = SA_RESETHAND };
 	sigaction(SIGTERM, &sigact, NULL);

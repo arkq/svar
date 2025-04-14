@@ -130,6 +130,7 @@ struct writer * writer_ogg_new(unsigned int channels, unsigned int sampling,
 		return NULL;
 
 	writer->format = WRITER_FORMAT_OGG;
+	writer->opened = false;
 	writer->open = writer_ogg_open;
 	writer->write = writer_ogg_write;
 	writer->close = writer_ogg_close;

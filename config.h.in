@@ -22,6 +22,9 @@
 /* Define to 1 if Ogg Vorbis is enabled. */
 #cmakedefine ENABLE_VORBIS 1
 
+/* Enable the use of GNU extensions. */
+#define _GNU_SOURCE
+
 /* Define to the name of this project. */
 #define PROJECT_NAME "@PROJECT_NAME@"
 

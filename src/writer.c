@@ -56,6 +56,7 @@ struct writer * writer_raw_new(unsigned int channels) {
 		return NULL;
 
 	writer->format = WRITER_FORMAT_RAW;
+	writer->opened = false;
 	writer->open = writer_raw_open;
 	writer->write = writer_raw_write;
 	writer->close = writer_raw_close;
