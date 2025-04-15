@@ -5,7 +5,7 @@
 cmake_minimum_required(VERSION 3.11)
 
 project(svar
-	VERSION 1.3.1
+	VERSION 1.4.0
 	DESCRIPTION "Simple Voice Activated Recorder"
 	LANGUAGES C)
 
@@ -34,6 +34,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 find_package(PkgConfig REQUIRED)
 
 add_executable(svar
+	src/pcm.c
 	src/rbuf.c
 	src/writer.c
 	src/main.c)

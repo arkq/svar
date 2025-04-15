@@ -14,6 +14,7 @@
 
 #include <vorbis/vorbisenc.h>
 
+#include "log.h"
 #include "writer.h"
 
 struct writer_ogg {
@@ -98,14 +99,14 @@ static void writer_ogg_close(struct writer * writer) {
 	w->fp = NULL;
 }
 
-static ssize_t writer_ogg_write(struct writer * writer, int16_t * buffer, size_t frames) {
+static ssize_t writer_ogg_write(struct writer * writer, const void * buffer, size_t frames) {
 	struct writer_ogg * w = writer->w;
 
 	/* Convert interleaved 16-bit buffer into vorbis buffer. */
 	float **vbs_buffer = vorbis_analysis_buffer(&w->vbs_d, frames);
 	for (size_t fi = 0; fi < frames; fi++)
 		for (int ci = 0; ci < w->vbs_i.channels; ci++)
-			vbs_buffer[ci][fi] = (float)(buffer[fi * w->vbs_i.channels + ci]) / 0x7ffe;
+			vbs_buffer[ci][fi] = (float)(((int16_t *)buffer)[fi * w->vbs_i.channels + ci]) / 0x7ffe;
 
 	vorbis_analysis_wrote(&w->vbs_d, frames);
 	return do_analysis_and_write_ogg(w);
@@ -122,14 +123,20 @@ static void writer_ogg_free(struct writer * writer) {
 	free(writer);
 }
 
-struct writer * writer_ogg_new(unsigned int channels, unsigned int sampling,
+struct writer * writer_ogg_new(
+		enum pcm_format format, unsigned int channels, unsigned int sampling,
 		int bitrate_min, int bitrate_nom, int bitrate_max, const char * comment) {
+
+	if (format != PCM_FORMAT_S16LE) {
+		error("OGG unsupported PCM format: %s", pcm_format_name(format));
+		return NULL;
+	}
 
 	struct writer * writer;
 	if ((writer = malloc(sizeof(*writer))) == NULL)
 		return NULL;
 
-	writer->format = WRITER_FORMAT_OGG;
+	writer->type = WRITER_TYPE_OGG;
 	writer->opened = false;
 	writer->open = writer_ogg_open;
 	writer->write = writer_ogg_write;

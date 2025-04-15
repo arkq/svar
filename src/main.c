@@ -30,6 +30,7 @@
 #endif
 
 #include "log.h"
+#include "pcm.h"
 #include "rbuf.h"
 #include "writer.h"
 #if ENABLE_MP3LAME
@@ -56,6 +57,7 @@ static int pcm_device_id = 0;
 #else
 static char pcm_device[25] = "default";
 #endif
+static enum pcm_format pcm_format = PCM_FORMAT_S16LE;
 static unsigned int pcm_channels = 1;
 static unsigned int pcm_rate = 44100;
 
@@ -72,12 +74,12 @@ static int bitrate_min = 32000;
 static int bitrate_nom = 64000;
 static int bitrate_max = 128000;
 
-/* The signal level threshold for activation (percentage of max signal). */
-static int threshold = 2;
-/* The fadeout time lag in ms after the last signal peak. */
-static int fadeout_time = 500;
+/* The signal threshold level for activation (percentage of max signal). */
+static int activation_threshold_level = 2;
+/* The activation fadeout time - the time after the last activation signal. */
+static long activation_fadeout_time_ms = 500;
 /* The split time in seconds for creating new output file. */
-static int split_time = 0; /* disable splitting by default */
+static long output_split_time_ms = 0; /* disable splitting by default */
 
 /* Reader/writer synchronization. */
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -105,7 +107,7 @@ static const char * get_output_file_name(void) {
 	static char name[sizeof(base) + 4];
 	strftime(base, sizeof(base), template, &now);
 	snprintf(name, sizeof(name), "%s.%s",
-			base, writer_format_to_string(writer->format));
+			base, writer_type_to_string(writer->type));
 
 	return name;
 }
@@ -113,6 +115,10 @@ static const char * get_output_file_name(void) {
 #if !ENABLE_PORTAUDIO
 /* Set ALSA hardware parameters. */
 static int pcm_set_hw_params(snd_pcm_t *pcm, char **msg) {
+
+	static const snd_pcm_format_t pcm_format_mapping[] = {
+		[PCM_FORMAT_S16LE] = SND_PCM_FORMAT_S16_LE,
+	};
 
 	snd_pcm_hw_params_t *params;
 	char buf[256];
@@ -130,9 +136,10 @@ static int pcm_set_hw_params(snd_pcm_t *pcm, char **msg) {
 				snd_strerror(err), snd_pcm_access_name(SND_PCM_ACCESS_RW_INTERLEAVED));
 		goto fail;
 	}
-	if ((err = snd_pcm_hw_params_set_format(pcm, params, SND_PCM_FORMAT_S16_LE)) != 0) {
+	const snd_pcm_format_t format = pcm_format_mapping[pcm_format];
+	if ((err = snd_pcm_hw_params_set_format(pcm, params, format)) != 0) {
 		snprintf(buf, sizeof(buf), "Set format: %s: %s",
-				snd_strerror(err), snd_pcm_format_name(SND_PCM_FORMAT_S16_LE));
+				snd_strerror(err), snd_pcm_format_name(format));
 		goto fail;
 	}
 	if ((err = snd_pcm_hw_params_set_channels_near(pcm, params, &pcm_channels)) != 0) {
@@ -167,15 +174,14 @@ static void print_audio_info(void) {
 	printf("Hardware parameters: %d Hz, S16LE, %d channel%s\n",
 			pcm_rate, pcm_channels, pcm_channels > 1 ? "s" : "");
 	if (!signal_meter)
-		printf("Output file format: %s\n",
-				writer_format_to_string(writer->format));
+		printf("Output file type: %s\n", writer_type_to_string(writer->type));
 #if ENABLE_MP3LAME
-	if (writer->format == WRITER_FORMAT_MP3)
+	if (writer->type == WRITER_TYPE_MP3)
 		printf("Output bit rate [min, max]: %d, %d kbit/s\n",
 				bitrate_min / 1000, bitrate_max / 1000);
 #endif
 #if ENABLE_VORBIS
-	if (writer->format == WRITER_FORMAT_OGG)
+	if (writer->type == WRITER_TYPE_OGG)
 		printf("Output bit rate [min, nominal, max]: %d, %d, %d kbit/s\n",
 				bitrate_min / 1000, bitrate_nom / 1000, bitrate_max / 1000);
 #endif
@@ -241,11 +247,11 @@ static bool check_activation_threshold(const int16_t * buffer, size_t samples) {
 
 	/* if the max peak in the buffer is greater than the threshold, update
 	 * the last peak time */
-	if ((int)signal_peak * 100 / 0x7ffe > threshold)
+	if ((int)signal_peak * 100 / 0x7ffe > activation_threshold_level)
 		clock_gettime(CLOCK_MONOTONIC_RAW, &peak_time);
 
 	clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
-	if (ts_diff_ms(&current_time, &peak_time) < fadeout_time)
+	if (ts_diff_ms(&current_time, &peak_time) < activation_fadeout_time_ms)
 		return true;
 
 	return false;
@@ -270,6 +276,7 @@ static int pa_capture_callback(const void * inputBuffer, void * outputBuffer,
 		while (samplesPerBuffer > 0) {
 			const size_t rb_wr_capacity_samples = rbuf_write_linear_capacity(&rb);
 			const size_t samples = MIN(samplesPerBuffer, rb_wr_capacity_samples);
+			const size_t sample_bytes = pcm_format_size(pcm_format, samples);
 
 			if (rb_wr_capacity_samples == 0) {
 				if (verbose >= 1)
@@ -277,10 +284,10 @@ static int pa_capture_callback(const void * inputBuffer, void * outputBuffer,
 				break;
 			}
 
-			memcpy(rb.tail, inputBuffer, samples * sizeof(int16_t));
+			memcpy(rb.tail, inputBuffer, sample_bytes);
 			rbuf_write_linear_commit(&rb, samples);
 
-			inputBuffer = (const int16_t *)inputBuffer + samples;
+			inputBuffer = (const char *)inputBuffer + sample_bytes;
 			samplesPerBuffer -= samples;
 
 		}
@@ -362,9 +369,9 @@ static void *processing_thread(void *arg) {
 			pthread_cond_wait(&cond, &mutex);
 			/* If split time is enabled and writer is opened,
 			 * check if we need to close the current writer. */
-			if (split_time && writer->opened) {
+			if (output_split_time_ms && writer->opened) {
 				clock_gettime(CLOCK_MONOTONIC_RAW, &ts_now);
-				if (ts_diff_ms(&ts_now, &ts_last_write) > split_time * 1000) {
+				if (ts_diff_ms(&ts_now, &ts_last_write) > output_split_time_ms) {
 					if (verbose >= 1)
 						info("Closing current output file");
 					writer->close(writer);
@@ -406,32 +413,37 @@ fail:
 int main(int argc, char *argv[]) {
 
 	int opt;
-	const char *opts = "hVvLD:R:C:l:f:o:s:m";
+	const char *opts = "hVvLD:t:c:C:f:r:R:l:o:s:m";
 	const struct option longopts[] = {
-		{"help", no_argument, NULL, 'h'},
-		{"version", no_argument, NULL, 'V'},
-		{"verbose", no_argument, NULL, 'v'},
-		{"list-devices", no_argument, NULL, 'L'},
-		{"device", required_argument, NULL, 'D'},
-		{"channels", required_argument, NULL, 'C'},
-		{"rate", required_argument, NULL, 'R'},
-		{"sig-level", required_argument, NULL, 'l'},
-		{"fadeout-lag", required_argument, NULL, 'f'},
-		{"out-format", required_argument, NULL, 'o'},
-		{"split-time", required_argument, NULL, 's'},
-		{"sig-meter", no_argument, NULL, 'm'},
-		{0, 0, 0, 0},
+		{ "help", no_argument, NULL, 'h' },
+		{ "version", no_argument, NULL, 'V' },
+		{ "verbose", no_argument, NULL, 'v' },
+		{ "list-devices", no_argument, NULL, 'L' },
+		{ "device", required_argument, NULL, 'D' },
+		{ "file-type", required_argument, NULL, 't' },
+		{ "out-format", required_argument, NULL, 't' }, /* old alias */
+		{ "channels", required_argument, NULL, 'c' },
+		{ "format", required_argument, NULL, 'f' },
+		{ "rate", required_argument, NULL, 'r' },
+		{ "level", required_argument, NULL, 'l' },
+		{ "sig-level", required_argument, NULL, 'l' }, /* old alias */
+		{ "fadeout", required_argument, NULL, 'o' },
+		{ "fadeout-lag", required_argument, NULL, 'o' }, /* old alias */
+		{ "split", required_argument, NULL, 's' },
+		{ "split-time", required_argument, NULL, 's' }, /* old alias */
+		{ "sig-meter", no_argument, NULL, 'm' },
+		{ 0 },
 	};
 
 	/* Select default output format based on available libraries. */
 #if ENABLE_SNDFILE
-	enum writer_format format = WRITER_FORMAT_WAV;
+	enum writer_type type = WRITER_TYPE_WAV;
 #elif ENABLE_VORBIS
-	enum writer_format format = WRITER_FORMAT_OGG;
+	enum writer_type type = WRITER_TYPE_OGG;
 #elif ENABLE_MP3LAME
-	enum writer_format format = WRITER_FORMAT_MP3;
+	enum writer_type type = WRITER_TYPE_MP3;
 #else
-	enum writer_format format = WRITER_FORMAT_RAW;
+	enum writer_type type = WRITER_TYPE_RAW;
 #endif
 
 #if ENABLE_PORTAUDIO
@@ -453,19 +465,20 @@ int main(int argc, char *argv[]) {
 					"\nOptions:\n"
 					"  -h, --help\t\t\tprint recipe for a delicious cake\n"
 					"  -V, --version\t\t\tprint version number and exit\n"
-					"  -v, --verbose\t\t\tprint some extra information\n"
+					"  -v, --verbose\t\t\tshow extra information (add more -v for more)\n"
 #if ENABLE_PORTAUDIO
 					"  -L, --list-devices\t\tlist available audio input devices\n"
-					"  -D ID, --device=ID\t\tselect audio input device (current: %d)\n"
+					"  -D, --device=ID\t\tselect audio input device (current: %d)\n"
 #else
-					"  -D DEV, --device=DEV\t\tselect audio input device (current: %s)\n"
+					"  -D, --device=DEV\t\tselect audio input device (current: %s)\n"
 #endif
-					"  -R NN, --rate=NN\t\tset sample rate (current: %u)\n"
-					"  -C NN, --channels=NN\t\tspecify number of channels (current: %u)\n"
-					"  -l NN, --sig-level=NN\t\tactivation signal threshold (current: %u)\n"
-					"  -f NN, --fadeout-lag=NN\tfadeout time lag in ms (current: %u)\n"
-					"  -s NN, --split-time=NN\tsplit output file time in s (current: %d)\n"
-					"  -o FMT, --out-format=FMT\toutput file format (current: %s)\n"
+					"  -t, --file-type=TYPE\t\toutput file type (current: %s)\n"
+					"  -c, --channels=NUM\t\tnumber of channels (current: %u)\n"
+					"  -f, --format=FORMAT\t\tsample format (current: %s)\n"
+					"  -r, --rate=NUM\t\tsample rate (current: %u Hz)\n"
+					"  -l, --level=NUM\t\tactivation threshold level (current: %u)\n"
+					"  -o, --fadeout=SEC\t\tactivation fadeout time (current: %#.1f s)\n"
+					"  -s, --split=SEC\t\toutput file split time (current: %#.1f s)\n"
 					"  -m, --sig-meter\t\taudio signal level meter\n"
 					"\n"
 					"The output-template argument is a strftime(3) format string which\n"
@@ -477,12 +490,13 @@ int main(int argc, char *argv[]) {
 #else
 					pcm_device,
 #endif
-					pcm_rate,
+					writer_type_to_string(type),
 					pcm_channels,
-					threshold,
-					fadeout_time,
-					split_time,
-					writer_format_to_string(format),
+					pcm_format_name(pcm_format),
+					pcm_rate,
+					activation_threshold_level,
+					activation_fadeout_time_ms * 0.001,
+					output_split_time_ms * 0.001,
 					template);
 			return EXIT_SUCCESS;
 
@@ -510,39 +524,32 @@ int main(int argc, char *argv[]) {
 			break;
 #endif
 
-		case 'C' /* --channels */ :
-			pcm_channels = abs(atoi(optarg));
-			break;
-		case 'R' /* --rate */ :
-			pcm_rate = abs(atoi(optarg));
-			break;
+		case 't' /* --file-type=TYPE */ : {
 
-		case 'o' /* --out-format */ : {
-
-			const enum writer_format formats[] = {
-				WRITER_FORMAT_RAW,
+			const enum writer_type types[] = {
+				WRITER_TYPE_RAW,
 #if ENABLE_MP3LAME
-				WRITER_FORMAT_MP3,
+				WRITER_TYPE_MP3,
 #endif
 #if ENABLE_SNDFILE
-				WRITER_FORMAT_WAV,
+				WRITER_TYPE_WAV,
 #endif
 #if ENABLE_VORBIS
-				WRITER_FORMAT_OGG,
+				WRITER_TYPE_OGG,
 #endif
 			};
 
 			size_t i;
-			for (i = 0; i < sizeof(formats) / sizeof(*formats); i++)
-				if (strcasecmp(writer_format_to_string(formats[i]), optarg) == 0) {
-					format = formats[i];
+			for (i = 0; i < sizeof(types) / sizeof(*types); i++)
+				if (strcasecmp(writer_type_to_string(types[i]), optarg) == 0) {
+					type = types[i];
 					break;
 				}
 
-			if (i == sizeof(formats) / sizeof(*formats)) {
-				fprintf(stderr, "error: Unknown output format {");
-				for (i = 0; i < sizeof(formats) / sizeof(*formats); i++) {
-					const char * name = writer_format_to_string(formats[i]);
+			if (i == sizeof(types) / sizeof(*types)) {
+				fprintf(stderr, "error: Unknown output file type {");
+				for (i = 0; i < sizeof(types) / sizeof(*types); i++) {
+					const char * name = writer_type_to_string(types[i]);
 					fprintf(stderr, "%s%s", i != 0 ? ", " : "", name);
 				}
 				fprintf(stderr, "}: %s\n", optarg);
@@ -551,26 +558,51 @@ int main(int argc, char *argv[]) {
 
 		} break;
 
-		case 'l' /* --sig-level */ :
-			threshold = atoi(optarg);
-			if (threshold < 0 || threshold > 100) {
-				error("Signal level out of range [0, 100]: %d", threshold);
+		case 'c' /* --channels=NUM */ :
+		case 'C':
+			pcm_channels = abs(atoi(optarg));
+			break;
+		case 'f' /* --format=FORMAT */ : {
+
+			enum pcm_format formats[] = {
+				PCM_FORMAT_S16LE,
+			};
+
+			size_t i;
+			for (i = 0; i < sizeof(formats) / sizeof(*formats); i++)
+				if (strcasecmp(pcm_format_name(formats[i]), optarg) == 0) {
+					pcm_format = formats[i];
+					break;
+				}
+
+			if (i == sizeof(formats) / sizeof(*formats)) {
+				fprintf(stderr, "error: Unknown sample format {");
+				for (i = 0; i < sizeof(formats) / sizeof(*formats); i++) {
+					const char * name = pcm_format_name(formats[i]);
+					fprintf(stderr, "%s%s", i != 0 ? ", " : "", name);
+				}
+				fprintf(stderr, "}: %s\n", optarg);
+				return EXIT_FAILURE;
+			}
+
+		} break;
+		case 'r' /* --rate=NUM */ :
+		case 'R':
+			pcm_rate = abs(atoi(optarg));
+			break;
+
+		case 'l' /* --level=NUM */ :
+			activation_threshold_level = atoi(optarg);
+			if (activation_threshold_level < 0 || activation_threshold_level > 100) {
+				error("Activation threshold level out of range [0, 100]: %d", activation_threshold_level);
 				return EXIT_FAILURE;
 			}
 			break;
-		case 'f' /* --fadeout-lag */ :
-			fadeout_time = atoi(optarg);
-			if (fadeout_time < 100 || fadeout_time > 1000000) {
-				error("Fadeout lag out of range [100, 1000000]: %d", fadeout_time);
-				return EXIT_FAILURE;
-			}
+		case 'o' /* --fadeout=SEC */ :
+			activation_fadeout_time_ms = atof(optarg) * 1000;
 			break;
-		case 's' /* --split-time */ :
-			split_time = atoi(optarg);
-			if (split_time < 0 || split_time > 1000000) {
-				error("Split time out of range [0, 1000000]: %d", split_time);
-				return EXIT_FAILURE;
-			}
+		case 's' /* --split=SEC */ :
+			output_split_time_ms = atof(optarg) * 1000;
 			break;
 
 		default:
@@ -589,11 +621,15 @@ int main(int argc, char *argv[]) {
 
 #if ENABLE_PORTAUDIO
 
+	static const PaSampleFormat pa_pcm_format_mapping[] = {
+		[PCM_FORMAT_S16LE] = paInt16,
+	};
+
 	PaStream *pa_stream = NULL;
 	PaStreamParameters pa_params = {
-		.sampleFormat = paInt16,
 		.device = pcm_device_id,
 		.channelCount = pcm_channels,
+		.sampleFormat = pa_pcm_format_mapping[pcm_format],
 		.suggestedLatency = Pa_GetDeviceInfo(pcm_device_id)->defaultLowInputLatency,
 		.hostApiSpecificStreamInfo = NULL,
 	};
@@ -626,26 +662,26 @@ int main(int argc, char *argv[]) {
 
 #endif
 
-	switch (format) {
-	case WRITER_FORMAT_RAW:
-		writer = writer_raw_new(pcm_channels);
+	switch (type) {
+	case WRITER_TYPE_RAW:
+		writer = writer_raw_new(pcm_format, pcm_channels);
 		break;
 #if ENABLE_SNDFILE
-	case WRITER_FORMAT_WAV:
-		writer = writer_wav_new(pcm_channels, pcm_rate);
+	case WRITER_TYPE_WAV:
+		writer = writer_wav_new(pcm_format, pcm_channels, pcm_rate);
 		break;
 #endif
 #if ENABLE_MP3LAME
-	case WRITER_FORMAT_MP3:
-		writer = writer_mp3_new(pcm_channels, pcm_rate,
+	case WRITER_TYPE_MP3:
+		writer = writer_mp3_new(pcm_format, pcm_channels, pcm_rate,
 				bitrate_min, bitrate_max, banner);
 		if (verbose >= 2)
 			writer_mp3_print_internals(writer);
 		break;
 #endif
 #if ENABLE_VORBIS
-	case WRITER_FORMAT_OGG:
-		writer = writer_ogg_new(pcm_channels, pcm_rate,
+	case WRITER_TYPE_OGG:
+		writer = writer_ogg_new(pcm_format, pcm_channels, pcm_rate,
 				bitrate_min, bitrate_nom, bitrate_max, banner);
 		break;
 #endif
@@ -659,7 +695,7 @@ int main(int argc, char *argv[]) {
 	if (verbose >= 1)
 		print_audio_info();
 
-	if (rbuf_init(&rb, pcm_channels * PROCESSING_FRAMES, sizeof(int16_t)) != 0) {
+	if (rbuf_init(&rb, pcm_channels * PROCESSING_FRAMES, pcm_format_size(pcm_format, 1)) != 0) {
 		error("Couldn't create ring buffer: %s", strerror(errno));
 		return EXIT_FAILURE;
 	}

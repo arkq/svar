@@ -29,7 +29,7 @@ string](https://man7.org/linux/man-pages/man3/strftime.3.html).
 
 For the fine adjustment of the activation condition (the signal level), one can run svar with the
 `--sig-meter` parameter. This activates the signal meter mode, in which the maximal peak value and
-the RMS is displayed. Activation threshold is based on the maximal peak value in the signal
+the RMS is displayed. Activation threshold level is based on the maximal peak value in the signal
 packed (time of tenth of the second).
 
 ## Installation

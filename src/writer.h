@@ -17,32 +17,34 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-enum writer_format {
-	WRITER_FORMAT_RAW,
+#include "pcm.h"
+
+enum writer_type {
+	WRITER_TYPE_RAW,
 #if ENABLE_SNDFILE
-	WRITER_FORMAT_WAV,
+	WRITER_TYPE_WAV,
 #endif
 #if ENABLE_MP3LAME
-	WRITER_FORMAT_MP3,
+	WRITER_TYPE_MP3,
 #endif
 #if ENABLE_VORBIS
-	WRITER_FORMAT_OGG,
+	WRITER_TYPE_OGG,
 #endif
 };
 
 struct writer {
-	enum writer_format format;
+	enum writer_type type;
 	bool opened;
 	/* implementation specific functions */
 	int (*open)(struct writer * w, const char * pathname);
-	ssize_t (*write)(struct writer * w, int16_t * buffer, size_t frames);
+	ssize_t (*write)(struct writer * w, const void * buffer, size_t frames);
 	void (*close)(struct writer * w);
 	void (*free)(struct writer * w);
 	/* implementation specific data */
 	void * w;
 };
 
-struct writer * writer_raw_new(unsigned int channels);
-const char * writer_format_to_string(enum writer_format format);
+struct writer * writer_raw_new(enum pcm_format format, unsigned int channels);
+const char * writer_type_to_string(enum writer_type type);
 
 #endif

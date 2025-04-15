@@ -22,11 +22,11 @@ struct writer_mp3 {
 	FILE * fp;
 };
 
-static int lame_encode(lame_global_flags *gfp, short int *buffer, int samples,
+static int lame_encode(lame_global_flags *gfp, const short int *buffer, int samples,
 		unsigned char *mp3buf, int size) {
 	if (lame_get_num_channels(gfp) == 1)
 		return lame_encode_buffer(gfp, buffer, NULL, samples, mp3buf, size);
-	return lame_encode_buffer_interleaved(gfp, buffer, samples, mp3buf, size);
+	return lame_encode_buffer_interleaved(gfp, (short *)buffer, samples, mp3buf, size);
 }
 
 static int writer_mp3_open(struct writer * writer, const char * pathname) {
@@ -43,7 +43,7 @@ static int writer_mp3_open(struct writer * writer, const char * pathname) {
 	return 0;
 }
 
-static ssize_t writer_mp3_write(struct writer * writer, int16_t * buffer, size_t frames) {
+static ssize_t writer_mp3_write(struct writer * writer, const void * buffer, size_t frames) {
 	struct writer_mp3 * w = writer->w;
 	int len = lame_encode(w->gfp, buffer, frames, w->mp3buf, sizeof(w->mp3buf));
 	return fwrite(w->mp3buf, 1, len, w->fp);
@@ -71,14 +71,20 @@ static void writer_mp3_free(struct writer * writer) {
 	free(writer);
 }
 
-struct writer * writer_mp3_new(unsigned int channels, unsigned int sampling,
+struct writer * writer_mp3_new(
+		enum pcm_format format, unsigned int channels, unsigned int sampling,
 		int bitrate_min, int bitrate_max, const char * comment) {
+
+	if (format != PCM_FORMAT_S16LE) {
+		error("MP3 unsupported PCM format: %s", pcm_format_name(format));
+		return NULL;
+	}
 
 	struct writer * writer;
 	if ((writer = malloc(sizeof(*writer))) == NULL)
 		return NULL;
 
-	writer->format = WRITER_FORMAT_MP3;
+	writer->type = WRITER_TYPE_MP3;
 	writer->opened = false;
 	writer->open = writer_mp3_open;
 	writer->write = writer_mp3_write;

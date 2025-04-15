@@ -42,7 +42,7 @@ static void writer_wav_close(struct writer * writer) {
 	}
 }
 
-static ssize_t writer_wav_write(struct writer * writer, int16_t * buffer, size_t frames) {
+static ssize_t writer_wav_write(struct writer * writer, const void * buffer, size_t frames) {
 	struct writer_wav * w = writer->w;
 	return sf_writef_short(w->sf, buffer, frames);
 }
@@ -55,13 +55,14 @@ static void writer_wav_free(struct writer * writer) {
 	free(writer);
 }
 
-struct writer * writer_wav_new(unsigned int channels, unsigned int sampling) {
+struct writer * writer_wav_new(
+		enum pcm_format format, unsigned int channels, unsigned int sampling) {
 
 	struct writer * writer;
 	if ((writer = malloc(sizeof(*writer))) == NULL)
 		return NULL;
 
-	writer->format = WRITER_FORMAT_WAV;
+	writer->type = WRITER_TYPE_WAV;
 	writer->opened = false;
 	writer->open = writer_wav_open;
 	writer->write = writer_wav_write;
@@ -74,7 +75,11 @@ struct writer * writer_wav_new(unsigned int channels, unsigned int sampling) {
 		return NULL;
 	}
 
-	w->sfinfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+	static const int format2sf[] = {
+		[PCM_FORMAT_S16LE] = SF_FORMAT_PCM_16,
+	};
+
+	w->sfinfo.format = SF_FORMAT_WAV | format2sf[format];
 	w->sfinfo.channels = channels;
 	w->sfinfo.samplerate = sampling;
 

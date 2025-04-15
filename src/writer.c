@@ -12,6 +12,7 @@
 #include <stdlib.h>
 
 struct writer_raw {
+	enum pcm_format format;
 	unsigned int channels;
 	FILE * f;
 };
@@ -27,9 +28,9 @@ static int writer_raw_open(struct writer * writer, const char * pathname) {
 	return 0;
 }
 
-static ssize_t writer_raw_write(struct writer * writer, int16_t * buffer, size_t frames) {
+static ssize_t writer_raw_write(struct writer * writer, const void * buffer, size_t frames) {
 	struct writer_raw * w = writer->w;
-	return fwrite(buffer, sizeof(int16_t) * w->channels, frames, w->f);
+	return fwrite(buffer, pcm_format_size(w->format, w->channels), frames, w->f);
 }
 
 static void writer_raw_close(struct writer * writer) {
@@ -49,13 +50,13 @@ static void writer_raw_free(struct writer * writer) {
 	free(writer);
 }
 
-struct writer * writer_raw_new(unsigned int channels) {
+struct writer * writer_raw_new(enum pcm_format format, unsigned int channels) {
 
 	struct writer * writer;
 	if ((writer = malloc(sizeof(*writer))) == NULL)
 		return NULL;
 
-	writer->format = WRITER_FORMAT_RAW;
+	writer->type = WRITER_TYPE_RAW;
 	writer->opened = false;
 	writer->open = writer_raw_open;
 	writer->write = writer_raw_write;
@@ -68,25 +69,26 @@ struct writer * writer_raw_new(unsigned int channels) {
 		return NULL;
 	}
 
+	w->format = format;
 	w->channels = channels;
 
 	return writer;
 }
 
-const char * writer_format_to_string(enum writer_format format) {
-	switch (format) {
-	case WRITER_FORMAT_RAW:
+const char * writer_type_to_string(enum writer_type type) {
+	switch (type) {
+	case WRITER_TYPE_RAW:
 		return "raw";
 #if ENABLE_SNDFILE
-	case WRITER_FORMAT_WAV:
+	case WRITER_TYPE_WAV:
 		return "wav";
 #endif
 #if ENABLE_MP3LAME
-	case WRITER_FORMAT_MP3:
+	case WRITER_TYPE_MP3:
 		return "mp3";
 #endif
 #if ENABLE_VORBIS
-	case WRITER_FORMAT_OGG:
+	case WRITER_TYPE_OGG:
 		return "ogg";
 #endif
 	}
