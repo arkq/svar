@@ -42,7 +42,12 @@ static void writer_wav_close(struct writer * writer) {
 	}
 }
 
-static ssize_t writer_wav_write(struct writer * writer, const void * buffer, size_t frames) {
+static ssize_t writer_wav_write_raw(struct writer * writer, const void * buffer, size_t frames) {
+	struct writer_wav * w = writer->w;
+	return sf_write_raw(w->sf, buffer, frames * w->sfinfo.channels);
+}
+
+static ssize_t writer_wav_write_short(struct writer * writer, const void * buffer, size_t frames) {
 	struct writer_wav * w = writer->w;
 	return sf_writef_short(w->sf, buffer, frames);
 }
@@ -65,7 +70,9 @@ struct writer * writer_wav_new(
 	writer->type = WRITER_TYPE_WAV;
 	writer->opened = false;
 	writer->open = writer_wav_open;
-	writer->write = writer_wav_write;
+	writer->write = writer_wav_write_raw;
+	if (format == PCM_FORMAT_S16LE)
+		writer->write = writer_wav_write_short;
 	writer->close = writer_wav_close;
 	writer->free = writer_wav_free;
 
@@ -76,6 +83,7 @@ struct writer * writer_wav_new(
 	}
 
 	static const int format2sf[] = {
+		[PCM_FORMAT_U8] = SF_FORMAT_PCM_U8,
 		[PCM_FORMAT_S16LE] = SF_FORMAT_PCM_16,
 	};
 

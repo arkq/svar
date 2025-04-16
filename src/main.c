@@ -117,6 +117,7 @@ static const char * output_file_name(void) {
 static int pcm_set_hw_params(snd_pcm_t *pcm, char **msg) {
 
 	static const snd_pcm_format_t pcm_format_mapping[] = {
+		[PCM_FORMAT_U8] = SND_PCM_FORMAT_U8,
 		[PCM_FORMAT_S16LE] = SND_PCM_FORMAT_S16_LE,
 	};
 
@@ -171,20 +172,22 @@ static void print_audio_info(void) {
 #else
 	printf("Selected PCM device: %s\n", pcm_device);
 #endif
-	printf("Hardware parameters: %d Hz, S16LE, %d channel%s\n",
-			pcm_rate, pcm_channels, pcm_channels > 1 ? "s" : "");
-	if (!signal_meter)
+	printf("Hardware parameters: %s, %d Hz, %d channel%s\n",
+			pcm_format_name(pcm_format), pcm_rate,
+			pcm_channels, pcm_channels > 1 ? "s" : "");
+	if (!signal_meter) {
 		printf("Output file type: %s\n", writer_type_to_string(writer->type));
 #if ENABLE_MP3LAME
-	if (writer->type == WRITER_TYPE_MP3)
-		printf("Output bit rate [min, max]: %d, %d kbit/s\n",
-				bitrate_min / 1000, bitrate_max / 1000);
+		if (writer->type == WRITER_TYPE_MP3)
+			printf("Output bit rate [kbit/s]: min=%d max=%d\n",
+					bitrate_min / 1000, bitrate_max / 1000);
 #endif
 #if ENABLE_VORBIS
-	if (writer->type == WRITER_TYPE_OGG)
-		printf("Output bit rate [min, nominal, max]: %d, %d, %d kbit/s\n",
-				bitrate_min / 1000, bitrate_nom / 1000, bitrate_max / 1000);
+		if (writer->type == WRITER_TYPE_OGG)
+			printf("Output bit rate [kbit/s]: min=%d nominal=%d max=%d\n",
+					bitrate_min / 1000, bitrate_nom / 1000, bitrate_max / 1000);
 #endif
+	}
 }
 
 #if ENABLE_PORTAUDIO
@@ -538,6 +541,7 @@ int main(int argc, char *argv[]) {
 		case 'f' /* --format=FORMAT */ : {
 
 			enum pcm_format formats[] = {
+				PCM_FORMAT_U8,
 				PCM_FORMAT_S16LE,
 			};
 
@@ -592,6 +596,7 @@ int main(int argc, char *argv[]) {
 #if ENABLE_PORTAUDIO
 
 	static const PaSampleFormat pa_pcm_format_mapping[] = {
+		[PCM_FORMAT_U8] = paUInt8,
 		[PCM_FORMAT_S16LE] = paInt16,
 	};
 

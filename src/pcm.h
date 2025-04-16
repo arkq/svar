@@ -13,6 +13,7 @@
 
 /* Supported PCM formats. */
 enum pcm_format {
+	PCM_FORMAT_U8,
 	PCM_FORMAT_S16LE,
 };
 

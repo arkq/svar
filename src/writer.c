@@ -12,8 +12,7 @@
 #include <stdlib.h>
 
 struct writer_raw {
-	enum pcm_format format;
-	unsigned int channels;
+	size_t frame_size;
 	FILE * f;
 };
 
@@ -30,7 +29,7 @@ static int writer_raw_open(struct writer * writer, const char * pathname) {
 
 static ssize_t writer_raw_write(struct writer * writer, const void * buffer, size_t frames) {
 	struct writer_raw * w = writer->w;
-	return fwrite(buffer, pcm_format_size(w->format, w->channels), frames, w->f);
+	return fwrite(buffer, w->frame_size, frames, w->f);
 }
 
 static void writer_raw_close(struct writer * writer) {
@@ -69,8 +68,7 @@ struct writer * writer_raw_new(enum pcm_format format, unsigned int channels) {
 		return NULL;
 	}
 
-	w->format = format;
-	w->channels = channels;
+	w->frame_size = pcm_format_size(format, channels);
 
 	return writer;
 }
