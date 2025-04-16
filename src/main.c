@@ -43,9 +43,6 @@
 # include "writer-ogg.h"
 #endif
 
-#define READER_FRAMES 512 * 8
-#define PROCESSING_FRAMES READER_FRAMES * 16
-
 /* Application banner used for output file comment string. */
 static const char * banner = "SVAR - Simple Voice Activated Recorder";
 /* The verbose level used for debugging. */
@@ -60,6 +57,9 @@ static char pcm_device[25] = "default";
 static enum pcm_format pcm_format = PCM_FORMAT_S16LE;
 static unsigned int pcm_channels = 1;
 static unsigned int pcm_rate = 44100;
+/* The number of frames read in a single read operation. This value
+ * should be set to pcm_rate / 10 to get 100 ms of audio data. */
+static size_t pcm_read_frames = 4410;
 
 /* If true, run signal meter only. */
 static bool signal_meter = false;
@@ -74,8 +74,8 @@ static int bitrate_min = 32000;
 static int bitrate_nom = 64000;
 static int bitrate_max = 128000;
 
-/* The signal threshold level for activation (percentage of max signal). */
-static int activation_threshold_level = 2;
+/* The activation threshold level in dB. */
+static double activation_threshold_level = -50.0;
 /* The activation fadeout time - the time after the last activation signal. */
 static long activation_fadeout_time_ms = 500;
 /* The split time in seconds for creating new output file. */
@@ -97,7 +97,7 @@ static time_t ts_diff_ms(const struct timespec * ts1, const struct timespec * ts
 	return (ts1->tv_sec - ts2->tv_sec) * 1000 + (ts1->tv_nsec - ts2->tv_nsec) / 1000000;
 }
 
-static const char * get_output_file_name(void) {
+static const char * output_file_name(void) {
 
 	struct tm now;
 	const time_t tmp = time(NULL);
@@ -206,52 +206,25 @@ static void pa_list_devices(void) {
 }
 #endif
 
-/* Calculate max peak and amplitude RMS (based on all channels). */
-static void peak_check_S16_LE(const int16_t *buffer, size_t frames, int channels,
-		int16_t *peak, int16_t *rms) {
+static bool check_activation_threshold(const void * buffer, size_t samples) {
 
-	const size_t size = frames * channels;
-	int16_t abslvl;
-	int64_t sum2;
-	size_t x;
-
-	*peak = 0;
-	for (x = sum2 = 0; x < size; x++) {
-		abslvl = abs(buffer[x]);
-		if (*peak < abslvl)
-			*peak = abslvl;
-		sum2 += abslvl * abslvl;
-	}
-
-	*rms = ceil(sqrt((double)sum2 / frames));
-}
-
-static bool check_activation_threshold(const int16_t * buffer, size_t samples) {
-
-	static struct timespec peak_time = { 0 };
-	struct timespec current_time;
-
-	int16_t signal_peak;
-	int16_t signal_rms;
-
-	const size_t frames = samples / pcm_channels;
-	peak_check_S16_LE(buffer, frames, pcm_channels, &signal_peak, &signal_rms);
+	static struct timespec activation_time = { 0 };
+	double buffer_rms_db = pcm_rms_db(pcm_format, buffer, samples);
 
 	if (signal_meter) {
-		/* dump current peak and RMS values to the stdout */
-		printf("\rsignal peak [%%]: %3u, signal RMS [%%]: %3u\r",
-				signal_peak * 100 / 0x7ffe, signal_rms * 100 / 0x7ffe);
+		/* Dump current RMS values to the stdout. */
+		printf("\rSignal RMS: %#5.1f dB\r", buffer_rms_db);
 		fflush(stdout);
 		return false;
 	}
 
-	/* if the max peak in the buffer is greater than the threshold, update
-	 * the last peak time */
-	if ((int)signal_peak * 100 / 0x7ffe > activation_threshold_level)
-		clock_gettime(CLOCK_MONOTONIC_RAW, &peak_time);
+	/* Update time if the signal RMS in the buffer exceeds the threshold. */
+	if (buffer_rms_db > activation_threshold_level)
+		clock_gettime(CLOCK_MONOTONIC_RAW, &activation_time);
 
-	clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
-	if (ts_diff_ms(&current_time, &peak_time) < activation_fadeout_time_ms)
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC_RAW, &now);
+	if (ts_diff_ms(&now, &activation_time) < activation_fadeout_time_ms)
 		return true;
 
 	return false;
@@ -316,7 +289,7 @@ static void *alsa_capture_thread(void *arg) {
 		pthread_mutex_unlock(&mutex);
 
 		snd_pcm_sframes_t frames = samples / pcm_channels;
-		if ((frames = snd_pcm_readi(pcm, rb.tail, MIN(frames, READER_FRAMES))) < 0)
+		if ((frames = snd_pcm_readi(pcm, rb.tail, MIN(frames, pcm_read_frames))) < 0)
 			switch (frames) {
 			case -EPIPE:
 			case -ESTRPIPE:
@@ -385,7 +358,7 @@ static void *processing_thread(void *arg) {
 			break;
 
 		if (!writer->opened) {
-			const char * name = get_output_file_name();
+			const char * name = output_file_name();
 			if (verbose >= 1)
 				info("Creating new output file: %s", name);
 			if (writer->open(writer, name) == -1) {
@@ -476,7 +449,7 @@ int main(int argc, char *argv[]) {
 					"  -c, --channels=NUM\t\tnumber of channels (current: %u)\n"
 					"  -f, --format=FORMAT\t\tsample format (current: %s)\n"
 					"  -r, --rate=NUM\t\tsample rate (current: %u Hz)\n"
-					"  -l, --level=NUM\t\tactivation threshold level (current: %u)\n"
+					"  -l, --level=NUM\t\tactivation threshold level (current: %#.1f dB)\n"
 					"  -o, --fadeout=SEC\t\tactivation fadeout time (current: %#.1f s)\n"
 					"  -s, --split=SEC\t\toutput file split time (current: %#.1f s)\n"
 					"  -m, --sig-meter\t\taudio signal level meter\n"
@@ -589,14 +562,11 @@ int main(int argc, char *argv[]) {
 		case 'r' /* --rate=NUM */ :
 		case 'R':
 			pcm_rate = abs(atoi(optarg));
+			pcm_read_frames = pcm_rate / 10;
 			break;
 
 		case 'l' /* --level=NUM */ :
-			activation_threshold_level = atoi(optarg);
-			if (activation_threshold_level < 0 || activation_threshold_level > 100) {
-				error("Activation threshold level out of range [0, 100]: %d", activation_threshold_level);
-				return EXIT_FAILURE;
-			}
+			activation_threshold_level = atof(optarg);
 			break;
 		case 'o' /* --fadeout=SEC */ :
 			activation_fadeout_time_ms = atof(optarg) * 1000;
@@ -635,7 +605,7 @@ int main(int argc, char *argv[]) {
 	};
 
 	if ((pa_err = Pa_OpenStream(&pa_stream, &pa_params, NULL, pcm_rate,
-					READER_FRAMES, paClipOff, pa_capture_callback, NULL)) != paNoError) {
+					pcm_read_frames, paClipOff, pa_capture_callback, NULL)) != paNoError) {
 		error("Couldn't open PortAudio stream: %s", Pa_GetErrorText(pa_err));
 		return EXIT_FAILURE;
 	}
@@ -695,7 +665,8 @@ int main(int argc, char *argv[]) {
 	if (verbose >= 1)
 		print_audio_info();
 
-	if (rbuf_init(&rb, pcm_channels * PROCESSING_FRAMES, pcm_format_size(pcm_format, 1)) != 0) {
+	const size_t rb_nmemb = pcm_channels * pcm_read_frames * 8;
+	if (rbuf_init(&rb, rb_nmemb, pcm_format_size(pcm_format, 1)) != 0) {
 		error("Couldn't create ring buffer: %s", strerror(errno));
 		return EXIT_FAILURE;
 	}

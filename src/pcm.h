@@ -19,4 +19,6 @@ enum pcm_format {
 const char * pcm_format_name(enum pcm_format format);
 size_t pcm_format_size(enum pcm_format format, size_t samples);
 
+double pcm_rms_db(enum pcm_format format, const void * buffer, size_t samples);
+
 #endif

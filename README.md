@@ -27,10 +27,10 @@ case, the time of signal appearance can be determined by the output file name, w
 in the format of "rec-DD-HH:MM:SS". It is possible to customize it with a [`strftime(3)` format
 string](https://man7.org/linux/man-pages/man3/strftime.3.html).
 
-For the fine adjustment of the activation condition (the signal level), one can run svar with the
-`--sig-meter` parameter. This activates the signal meter mode, in which the maximal peak value and
-the RMS is displayed. Activation threshold level is based on the maximal peak value in the signal
-packed (time of tenth of the second).
+For the fine adjustment of the activation threshold level, one can run `svar`
+with the `--sig-meter` option which activates the signal meter mode. This mode
+shows root mean square (RMS) value of the live signal. The RMS is calculated
+from the last 100 ms of captured audio.
 
 ## Installation
 
