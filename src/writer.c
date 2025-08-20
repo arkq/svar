@@ -79,6 +79,7 @@ const char * writer_type_to_string(enum writer_type type) {
 		return "raw";
 #if ENABLE_SNDFILE
 	case WRITER_TYPE_WAV:
+	case WRITER_TYPE_RF64:
 		return "wav";
 #endif
 #if ENABLE_MP3LAME

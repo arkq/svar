@@ -15,7 +15,7 @@ Alternatively, it is possible to force PortAudio back-end on Linux systems by ad
 Currently this application supports four output formats:
 
 - RAW (PCM 16bit interleaved)
-- WAV ([libsndfile](http://www.mega-nerd.com/libsndfile/))
+- WAV, RF64 ([libsndfile](http://www.mega-nerd.com/libsndfile/))
 - MP3 ([mp3lame](http://lame.sourceforge.net/))
 - OGG ([libvorbis](http://www.xiph.org/vorbis/))
 

@@ -13,5 +13,7 @@
 
 struct writer * writer_wav_new(
 		enum pcm_format format, unsigned int channels, unsigned int sampling);
+struct writer * writer_rf64_new(
+		enum pcm_format format, unsigned int channels, unsigned int sampling);
 
 #endif

@@ -509,6 +509,7 @@ int main(int argc, char *argv[]) {
 #endif
 #if ENABLE_SNDFILE
 				WRITER_TYPE_WAV,
+				WRITER_TYPE_RF64,
 #endif
 #if ENABLE_VORBIS
 				WRITER_TYPE_OGG,
@@ -644,6 +645,9 @@ int main(int argc, char *argv[]) {
 #if ENABLE_SNDFILE
 	case WRITER_TYPE_WAV:
 		writer = writer_wav_new(pcm_format, pcm_channels, pcm_rate);
+		break;
+	case WRITER_TYPE_RF64:
+		writer = writer_rf64_new(pcm_format, pcm_channels, pcm_rate);
 		break;
 #endif
 #if ENABLE_MP3LAME
