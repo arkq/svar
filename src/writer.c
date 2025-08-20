@@ -80,6 +80,8 @@ const char * writer_type_to_string(enum writer_type type) {
 #if ENABLE_SNDFILE
 	case WRITER_TYPE_WAV:
 		return "wav";
+	case WRITER_TYPE_RF64:
+		return "rf64";
 #endif
 #if ENABLE_MP3LAME
 	case WRITER_TYPE_MP3:
