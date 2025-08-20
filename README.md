@@ -12,6 +12,10 @@ technology. For all other systems, [PortAudio](http://www.portaudio.com/) librar
 Alternatively, it is possible to force PortAudio back-end on Linux systems by adding
 `-DENABLE_PORTAUDIO=ON` to the CMake configuration step.
 
+Additionally, [PipeWire](https://pipewire.org/) is supported as an audio back-end on Linux systems
+by adding `-DENABLE_PIPEWIRE=ON` to the CMake configuration step. When multiple back-ends are
+enabled, the precedence order is: PipeWire > PortAudio > ALSA.
+
 Currently this application supports four output formats:
 
 - RAW (PCM 16bit interleaved)
