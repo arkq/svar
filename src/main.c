@@ -23,7 +23,12 @@
 #include <sys/time.h>
 #include <time.h>
 
-#if ENABLE_PORTAUDIO
+#if ENABLE_PIPEWIRE
+# include <pipewire/pipewire.h>
+# include <spa/param/audio/format-utils.h>
+# include <spa/utils/result.h>
+# include <spa/pod/builder.h>
+#elif ENABLE_PORTAUDIO
 # include <portaudio.h>
 #else
 # include <alsa/asoundlib.h>
@@ -49,7 +54,9 @@ static const char * banner = "SVAR - Simple Voice Activated Recorder";
 static int verbose = 0;
 
 /* Selected capturing PCM device. */
-#if ENABLE_PORTAUDIO
+#if ENABLE_PIPEWIRE
+static char pcm_device[64] = "default";
+#elif ENABLE_PORTAUDIO
 static int pcm_device_id = 0;
 #else
 static char pcm_device[25] = "default";
@@ -88,8 +95,16 @@ static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 static bool active = true;
 static struct rbuf rb;
 
+#if ENABLE_PIPEWIRE
+static struct pw_main_loop *global_pw_main_loop = NULL;
+#endif
+
 static void main_loop_stop(int sig) {
 	active = false;
+#if ENABLE_PIPEWIRE
+	if (global_pw_main_loop != NULL)
+		pw_main_loop_quit(global_pw_main_loop);
+#endif
 	(void)sig;
 }
 
@@ -112,7 +127,7 @@ static const char * output_file_name(void) {
 	return name;
 }
 
-#if !ENABLE_PORTAUDIO
+#if !ENABLE_PORTAUDIO && !ENABLE_PIPEWIRE
 /* Set ALSA hardware parameters. */
 static int pcm_set_hw_params(snd_pcm_t *pcm, char **msg) {
 
@@ -167,7 +182,9 @@ fail:
 
 /* Print some information about the audio device and its configuration. */
 static void print_audio_info(void) {
-#if ENABLE_PORTAUDIO
+#if ENABLE_PIPEWIRE
+	printf("Selected PCM device: %s\n", pcm_device);
+#elif ENABLE_PORTAUDIO
 	printf("Selected PCM device ID: %d\n", pcm_device_id);
 #else
 	printf("Selected PCM device: %s\n", pcm_device);
@@ -278,6 +295,69 @@ static int pa_capture_callback(const void * inputBuffer, void * outputBuffer,
 
 	return active ? paContinue : paComplete;
 }
+
+#elif ENABLE_PIPEWIRE
+
+/* Callback function for PipeWire capture. */
+static void pw_stream_process(void *data) {
+	struct pw_stream *stream = data;
+	struct pw_buffer *pw_buf;
+	struct spa_buffer *buf;
+	struct spa_data *d;
+	uint32_t n_samples, n_bytes;
+	const void *samples;
+	const char *samples_ptr;
+
+	if ((pw_buf = pw_stream_dequeue_buffer(stream)) == NULL) {
+		warn("out of buffers: %m");
+		return;
+	}
+
+	buf = pw_buf->buffer;
+	d = &buf->datas[0];
+	if (d->data == NULL)
+		return;
+
+	samples = SPA_PTROFF(d->data, d->chunk->offset, void);
+	samples_ptr = (const char *)samples;
+	n_bytes = d->chunk->size;
+	n_samples = n_bytes / pcm_format_size(pcm_format, 1);
+
+	if (check_activation_threshold(samples, n_samples)) {
+		pthread_mutex_lock(&mutex);
+
+		while (n_samples > 0) {
+			const size_t rb_wr_capacity_samples = rbuf_write_linear_capacity(&rb);
+			const size_t samples_to_copy = MIN(n_samples, rb_wr_capacity_samples);
+			const size_t bytes_to_copy = pcm_format_size(pcm_format, samples_to_copy);
+
+			if (rb_wr_capacity_samples == 0) {
+				if (verbose >= 1)
+					warn("PCM buffer overrun: %s", "Ring buffer full");
+				break;
+			}
+
+			memcpy(rb.tail, samples_ptr, bytes_to_copy);
+			rbuf_write_linear_commit(&rb, samples_to_copy);
+
+			samples_ptr += bytes_to_copy;
+			n_samples -= samples_to_copy;
+		}
+
+		pthread_mutex_unlock(&mutex);
+	}
+
+	/* Wake up the processing thread to process audio or to close
+	 * the current writer if split time was exceeded. */
+	pthread_cond_signal(&cond);
+
+	pw_stream_queue_buffer(stream, pw_buf);
+}
+
+static const struct pw_stream_events pw_stream_events = {
+	PW_VERSION_STREAM_EVENTS,
+	.process = pw_stream_process,
+};
 
 #else
 
@@ -442,7 +522,9 @@ int main(int argc, char *argv[]) {
 					"  -h, --help\t\t\tprint recipe for a delicious cake\n"
 					"  -V, --version\t\t\tprint version number and exit\n"
 					"  -v, --verbose\t\t\tshow extra information (add more -v for more)\n"
-#if ENABLE_PORTAUDIO
+#if ENABLE_PIPEWIRE
+					"  -D, --device=DEV\t\tselect audio input device (current: %s)\n"
+#elif ENABLE_PORTAUDIO
 					"  -L, --list-devices\t\tlist available audio input devices\n"
 					"  -D, --device=ID\t\tselect audio input device (current: %d)\n"
 #else
@@ -461,7 +543,9 @@ int main(int argc, char *argv[]) {
 					"will be used for creating output file name. If not specified, the\n"
 					"default value is: %s + extension\n",
 					argv[0],
-#if ENABLE_PORTAUDIO
+#if ENABLE_PIPEWIRE
+					pcm_device,
+#elif ENABLE_PORTAUDIO
 					pcm_device_id,
 #else
 					pcm_device,
@@ -487,7 +571,11 @@ int main(int argc, char *argv[]) {
 			verbose++;
 			break;
 
-#if ENABLE_PORTAUDIO
+#if ENABLE_PIPEWIRE
+		case 'D' /* --device=DEV */ :
+			strncpy(pcm_device, optarg, sizeof(pcm_device) - 1);
+			break;
+#elif ENABLE_PORTAUDIO
 		case 'L' /* --list-devices */ :
 			pa_list_devices();
 			return EXIT_SUCCESS;
@@ -587,7 +675,7 @@ int main(int argc, char *argv[]) {
 	if (optind < argc)
 		template = argv[optind];
 
-#if !ENABLE_PORTAUDIO
+#if !ENABLE_PORTAUDIO && !ENABLE_PIPEWIRE
 	pthread_t thread_alsa_capture_id;
 #endif
 	pthread_t thread_process_id;
@@ -612,6 +700,64 @@ int main(int argc, char *argv[]) {
 	if ((pa_err = Pa_OpenStream(&pa_stream, &pa_params, NULL, pcm_rate,
 					pcm_read_frames, paClipOff, pa_capture_callback, NULL)) != paNoError) {
 		error("Couldn't open PortAudio stream: %s", Pa_GetErrorText(pa_err));
+		return EXIT_FAILURE;
+	}
+
+#elif ENABLE_PIPEWIRE
+
+	struct pw_main_loop *pw_main_loop;
+	struct pw_context *pw_context;
+	struct pw_core *pw_core;
+	struct pw_stream *pw_stream;
+	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(NULL, 0);
+	const struct spa_pod *params[1];
+	struct spa_audio_info_raw audio_info = SPA_AUDIO_INFO_RAW_INIT(
+		.format = SPA_AUDIO_FORMAT_S16_LE,
+		.channels = pcm_channels,
+		.rate = pcm_rate,
+	);
+
+	pw_init(NULL, NULL);
+
+	global_pw_main_loop = pw_main_loop_new(NULL);
+	if (global_pw_main_loop == NULL) {
+		error("Couldn't create PipeWire main loop");
+		return EXIT_FAILURE;
+	}
+	pw_main_loop = global_pw_main_loop;
+
+	pw_context = pw_context_new(pw_main_loop_get_loop(pw_main_loop), NULL, 0);
+	if (pw_context == NULL) {
+		error("Couldn't create PipeWire context");
+		return EXIT_FAILURE;
+	}
+
+	pw_core = pw_context_connect(pw_context, NULL, 0);
+	if (pw_core == NULL) {
+		error("Couldn't connect to PipeWire");
+		return EXIT_FAILURE;
+	}
+
+	struct pw_properties *props = pw_properties_new(
+		PW_KEY_MEDIA_TYPE, "Audio",
+		PW_KEY_MEDIA_CATEGORY, "Capture",
+		PW_KEY_MEDIA_ROLE, "DSP",
+		NULL);
+
+	pw_stream = pw_stream_new(pw_core, "svar", props);
+	if (pw_stream == NULL) {
+		error("Couldn't create PipeWire stream");
+		return EXIT_FAILURE;
+	}
+
+	pw_stream_add_listener(pw_stream, &(struct spa_hook){}, &pw_stream_events, pw_stream);
+
+	params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &audio_info);
+
+	if (pw_stream_connect(pw_stream, PW_DIRECTION_INPUT, PW_ID_ANY,
+			PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
+			params, 1) < 0) {
+		error("Couldn't connect PipeWire stream");
 		return EXIT_FAILURE;
 	}
 
@@ -685,6 +831,8 @@ int main(int argc, char *argv[]) {
 		error("Couldn't start PortAudio stream: %s", Pa_GetErrorText(pa_err));
 		return EXIT_FAILURE;
 	}
+#elif ENABLE_PIPEWIRE
+	/* PipeWire stream will start automatically when connected */
 #else
 	if ((err = pthread_create(&thread_alsa_capture_id, NULL, &alsa_capture_thread, pcm)) != 0) {
 		error("Couldn't create ALSA capture thread: %s", strerror(-err));
@@ -703,6 +851,8 @@ int main(int argc, char *argv[]) {
 		Pa_Sleep(1000);
 	if (pa_err < 0)
 		error("Couldn't check PortAudio activity: %s", Pa_GetErrorText(pa_err));
+#elif ENABLE_PIPEWIRE
+	pw_main_loop_run(pw_main_loop);
 #else
 	pthread_join(thread_alsa_capture_id, NULL);
 #endif
