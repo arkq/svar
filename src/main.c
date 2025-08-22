@@ -54,12 +54,10 @@ static const char * banner = "SVAR - Simple Voice Activated Recorder";
 static int verbose = 0;
 
 /* Selected capturing PCM device. */
-#if ENABLE_PIPEWIRE
-static char pcm_device[64] = "default";
-#elif ENABLE_PORTAUDIO
+#if ENABLE_PORTAUDIO
 static int pcm_device_id = 0;
 #else
-static char pcm_device[25] = "default";
+static char pcm_device[64] = "default";
 #endif
 static enum pcm_format pcm_format = PCM_FORMAT_S16LE;
 static unsigned int pcm_channels = 1;
@@ -250,6 +248,41 @@ static bool check_activation_threshold(const void * buffer, size_t samples) {
 	return false;
 }
 
+/* Common function to process audio samples and write to ring buffer */
+static void process_audio_samples(const void *samples, size_t sample_count) {
+	if (!check_activation_threshold(samples, sample_count))
+		return;
+
+	pthread_mutex_lock(&mutex);
+
+	const char *samples_ptr = (const char *)samples;
+	size_t remaining_samples = sample_count;
+
+	while (remaining_samples > 0) {
+		const size_t rb_wr_capacity_samples = rbuf_write_linear_capacity(&rb);
+		const size_t samples_to_copy = MIN(remaining_samples, rb_wr_capacity_samples);
+		const size_t bytes_to_copy = pcm_format_size(pcm_format, samples_to_copy);
+
+		if (rb_wr_capacity_samples == 0) {
+			if (verbose >= 1)
+				warn("PCM buffer overrun: %s", "Ring buffer full");
+			break;
+		}
+
+		memcpy(rb.tail, samples_ptr, bytes_to_copy);
+		rbuf_write_linear_commit(&rb, samples_to_copy);
+
+		samples_ptr += bytes_to_copy;
+		remaining_samples -= samples_to_copy;
+	}
+
+	pthread_mutex_unlock(&mutex);
+
+	/* Wake up the processing thread to process audio or to close
+	 * the current writer if split time was exceeded. */
+	pthread_cond_signal(&cond);
+}
+
 #if ENABLE_PORTAUDIO
 
 /* Callback function for PortAudio capture. */
@@ -262,36 +295,7 @@ static int pa_capture_callback(const void * inputBuffer, void * outputBuffer,
 	(void)userData;
 
 	unsigned long samplesPerBuffer = framesPerBuffer * pcm_channels;
-	if (check_activation_threshold(inputBuffer, samplesPerBuffer)) {
-
-		pthread_mutex_lock(&mutex);
-
-		while (samplesPerBuffer > 0) {
-			const size_t rb_wr_capacity_samples = rbuf_write_linear_capacity(&rb);
-			const size_t samples = MIN(samplesPerBuffer, rb_wr_capacity_samples);
-			const size_t sample_bytes = pcm_format_size(pcm_format, samples);
-
-			if (rb_wr_capacity_samples == 0) {
-				if (verbose >= 1)
-					warn("PCM buffer overrun: %s", "Ring buffer full");
-				break;
-			}
-
-			memcpy(rb.tail, inputBuffer, sample_bytes);
-			rbuf_write_linear_commit(&rb, samples);
-
-			inputBuffer = (const char *)inputBuffer + sample_bytes;
-			samplesPerBuffer -= samples;
-
-		}
-
-		pthread_mutex_unlock(&mutex);
-
-	}
-
-	/* Wake up the processing thread to process audio or to close
-	 * the current writer if split time was exceeded. */
-	pthread_cond_signal(&cond);
+	process_audio_samples(inputBuffer, samplesPerBuffer);
 
 	return active ? paContinue : paComplete;
 }
@@ -306,7 +310,6 @@ static void pw_stream_process(void *data) {
 	struct spa_data *d;
 	uint32_t n_samples, n_bytes;
 	const void *samples;
-	const char *samples_ptr;
 
 	if ((pw_buf = pw_stream_dequeue_buffer(stream)) == NULL) {
 		warn("out of buffers: %m");
@@ -319,37 +322,10 @@ static void pw_stream_process(void *data) {
 		return;
 
 	samples = SPA_PTROFF(d->data, d->chunk->offset, void);
-	samples_ptr = (const char *)samples;
 	n_bytes = d->chunk->size;
 	n_samples = n_bytes / pcm_format_size(pcm_format, 1);
 
-	if (check_activation_threshold(samples, n_samples)) {
-		pthread_mutex_lock(&mutex);
-
-		while (n_samples > 0) {
-			const size_t rb_wr_capacity_samples = rbuf_write_linear_capacity(&rb);
-			const size_t samples_to_copy = MIN(n_samples, rb_wr_capacity_samples);
-			const size_t bytes_to_copy = pcm_format_size(pcm_format, samples_to_copy);
-
-			if (rb_wr_capacity_samples == 0) {
-				if (verbose >= 1)
-					warn("PCM buffer overrun: %s", "Ring buffer full");
-				break;
-			}
-
-			memcpy(rb.tail, samples_ptr, bytes_to_copy);
-			rbuf_write_linear_commit(&rb, samples_to_copy);
-
-			samples_ptr += bytes_to_copy;
-			n_samples -= samples_to_copy;
-		}
-
-		pthread_mutex_unlock(&mutex);
-	}
-
-	/* Wake up the processing thread to process audio or to close
-	 * the current writer if split time was exceeded. */
-	pthread_cond_signal(&cond);
+	process_audio_samples(samples, n_samples);
 
 	pw_stream_queue_buffer(stream, pw_buf);
 }
@@ -705,14 +681,22 @@ int main(int argc, char *argv[]) {
 
 #elif ENABLE_PIPEWIRE
 
-	struct pw_main_loop *pw_main_loop;
+/* Convert pcm_format to PipeWire SPA format. */
+static enum spa_audio_format pcm_format_to_spa_format(enum pcm_format format) {
+	static const enum spa_audio_format pcm_format_mapping[] = {
+		[PCM_FORMAT_U8] = SPA_AUDIO_FORMAT_U8,
+		[PCM_FORMAT_S16LE] = SPA_AUDIO_FORMAT_S16_LE,
+	};
+	return pcm_format_mapping[format];
+}
+
 	struct pw_context *pw_context;
 	struct pw_core *pw_core;
 	struct pw_stream *pw_stream;
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(NULL, 0);
 	const struct spa_pod *params[1];
 	struct spa_audio_info_raw audio_info = SPA_AUDIO_INFO_RAW_INIT(
-		.format = SPA_AUDIO_FORMAT_S16_LE,
+		.format = pcm_format_to_spa_format(pcm_format),
 		.channels = pcm_channels,
 		.rate = pcm_rate,
 	);
@@ -724,9 +708,8 @@ int main(int argc, char *argv[]) {
 		error("Couldn't create PipeWire main loop");
 		return EXIT_FAILURE;
 	}
-	pw_main_loop = global_pw_main_loop;
 
-	pw_context = pw_context_new(pw_main_loop_get_loop(pw_main_loop), NULL, 0);
+	pw_context = pw_context_new(pw_main_loop_get_loop(global_pw_main_loop), NULL, 0);
 	if (pw_context == NULL) {
 		error("Couldn't create PipeWire context");
 		return EXIT_FAILURE;
@@ -754,10 +737,11 @@ int main(int argc, char *argv[]) {
 
 	params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &audio_info);
 
-	if (pw_stream_connect(pw_stream, PW_DIRECTION_INPUT, PW_ID_ANY,
+	int ret;
+	if ((ret = pw_stream_connect(pw_stream, PW_DIRECTION_INPUT, PW_ID_ANY,
 			PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
-			params, 1) < 0) {
-		error("Couldn't connect PipeWire stream");
+			params, 1)) < 0) {
+		error("Couldn't connect PipeWire stream: %s", spa_strerror(ret));
 		return EXIT_FAILURE;
 	}
 
@@ -852,7 +836,7 @@ int main(int argc, char *argv[]) {
 	if (pa_err < 0)
 		error("Couldn't check PortAudio activity: %s", Pa_GetErrorText(pa_err));
 #elif ENABLE_PIPEWIRE
-	pw_main_loop_run(pw_main_loop);
+	pw_main_loop_run(global_pw_main_loop);
 #else
 	pthread_join(thread_alsa_capture_id, NULL);
 #endif
