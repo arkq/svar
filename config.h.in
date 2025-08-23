@@ -10,11 +10,11 @@
 /* Define to 1 if debugging is enabled. */
 #cmakedefine DEBUG 1
 
-/* Define to 1 if PortAudio is enabled. */
-#cmakedefine ENABLE_PORTAUDIO 1
-
 /* Define to 1 if PipeWire is enabled. */
 #cmakedefine ENABLE_PIPEWIRE 1
+
+/* Define to 1 if PortAudio is enabled. */
+#cmakedefine ENABLE_PORTAUDIO 1
 
 /* Define to 1 if Mp3Lame is enabled. */
 #cmakedefine ENABLE_MP3LAME 1

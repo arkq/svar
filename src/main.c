@@ -54,7 +54,9 @@ static const char * banner = "SVAR - Simple Voice Activated Recorder";
 static int verbose = 0;
 
 /* Selected capturing PCM device. */
-#if ENABLE_PORTAUDIO
+#if ENABLE_PIPEWIRE
+static char pcm_device[64] = "default";
+#elif ENABLE_PORTAUDIO
 static int pcm_device_id = 0;
 #else
 static char pcm_device[64] = "default";
@@ -283,6 +285,19 @@ static void process_audio_samples(const void *samples, size_t sample_count) {
 	pthread_cond_signal(&cond);
 }
 
+#if ENABLE_PIPEWIRE
+
+/* Convert pcm_format to PipeWire SPA format. */
+static enum spa_audio_format pcm_format_to_spa_format(enum pcm_format format) {
+	static const enum spa_audio_format pcm_format_mapping[] = {
+		[PCM_FORMAT_U8] = SPA_AUDIO_FORMAT_U8,
+		[PCM_FORMAT_S16LE] = SPA_AUDIO_FORMAT_S16_LE,
+	};
+	return pcm_format_mapping[format];
+}
+
+#endif
+
 #if ENABLE_PORTAUDIO
 
 /* Callback function for PortAudio capture. */
@@ -498,9 +513,7 @@ int main(int argc, char *argv[]) {
 					"  -h, --help\t\t\tprint recipe for a delicious cake\n"
 					"  -V, --version\t\t\tprint version number and exit\n"
 					"  -v, --verbose\t\t\tshow extra information (add more -v for more)\n"
-#if ENABLE_PIPEWIRE
-					"  -D, --device=DEV\t\tselect audio input device (current: %s)\n"
-#elif ENABLE_PORTAUDIO
+#if ENABLE_PORTAUDIO
 					"  -L, --list-devices\t\tlist available audio input devices\n"
 					"  -D, --device=ID\t\tselect audio input device (current: %d)\n"
 #else
@@ -681,15 +694,6 @@ int main(int argc, char *argv[]) {
 
 #elif ENABLE_PIPEWIRE
 
-/* Convert pcm_format to PipeWire SPA format. */
-static enum spa_audio_format pcm_format_to_spa_format(enum pcm_format format) {
-	static const enum spa_audio_format pcm_format_mapping[] = {
-		[PCM_FORMAT_U8] = SPA_AUDIO_FORMAT_U8,
-		[PCM_FORMAT_S16LE] = SPA_AUDIO_FORMAT_S16_LE,
-	};
-	return pcm_format_mapping[format];
-}
-
 	struct pw_context *pw_context;
 	struct pw_core *pw_core;
 	struct pw_stream *pw_stream;
@@ -810,13 +814,13 @@ static enum spa_audio_format pcm_format_to_spa_format(enum pcm_format format) {
 	sigaction(SIGTERM, &sigact, NULL);
 	sigaction(SIGINT, &sigact, NULL);
 
-#if ENABLE_PORTAUDIO
+#if ENABLE_PIPEWIRE
+	/* PipeWire stream will start automatically when connected */
+#elif ENABLE_PORTAUDIO
 	if ((pa_err = Pa_StartStream(pa_stream)) != paNoError) {
 		error("Couldn't start PortAudio stream: %s", Pa_GetErrorText(pa_err));
 		return EXIT_FAILURE;
 	}
-#elif ENABLE_PIPEWIRE
-	/* PipeWire stream will start automatically when connected */
 #else
 	if ((err = pthread_create(&thread_alsa_capture_id, NULL, &alsa_capture_thread, pcm)) != 0) {
 		error("Couldn't create ALSA capture thread: %s", strerror(-err));
@@ -830,13 +834,13 @@ static enum spa_audio_format pcm_format_to_spa_format(enum pcm_format format) {
 		return EXIT_FAILURE;
 	}
 
-#if ENABLE_PORTAUDIO
+#if ENABLE_PIPEWIRE
+	pw_main_loop_run(global_pw_main_loop);
+#elif ENABLE_PORTAUDIO
 	while ((pa_err = Pa_IsStreamActive(pa_stream)) == 1)
 		Pa_Sleep(1000);
 	if (pa_err < 0)
 		error("Couldn't check PortAudio activity: %s", Pa_GetErrorText(pa_err));
-#elif ENABLE_PIPEWIRE
-	pw_main_loop_run(global_pw_main_loop);
 #else
 	pthread_join(thread_alsa_capture_id, NULL);
 #endif
