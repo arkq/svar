@@ -15,7 +15,10 @@ jobs:
     strategy:
       matrix:
         build-type: [ Debug, Release ]
-        port-audio: [ ENABLE_PORTAUDIO=ON, ENABLE_PORTAUDIO=OFF ]
+        audio-backend:
+          - -DENABLE_PIPEWIRE=OFF -DENABLE_PORTAUDIO=OFF
+          - -DENABLE_PIPEWIRE=ON  -DENABLE_PORTAUDIO=OFF
+          - -DENABLE_PIPEWIRE=OFF -DENABLE_PORTAUDIO=ON
       fail-fast: false
     runs-on: ubuntu-latest
     steps:
@@ -27,6 +30,7 @@ jobs:
           libasound2-dev \
           libmp3lame-dev \
           libogg-dev \
+          libpipewire-0.3-dev \
           libsndfile1-dev \
           libvorbis-dev \
           portaudio19-dev
@@ -43,7 +47,7 @@ jobs:
         cmake $GITHUB_WORKSPACE
         -DCMAKE_BUILD_TYPE=${{ matrix.build-type }}
         -DBUILD_TESTING=ON
-        -D${{ matrix.port-audio }}
+        ${{ matrix.audio-backend }}
         -DENABLE_MP3LAME=ON
         -DENABLE_SNDFILE=ON
         -DENABLE_VORBIS=ON

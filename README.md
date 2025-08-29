@@ -8,9 +8,9 @@ Operated Recording (VOR). When the signal level is low for longer than the fadeo
 recording is paused.
 
 On Linux systems, capturing the audio signal is based on the [ALSA](http://www.alsa-project.org/)
-technology. For all other systems, [PortAudio](http://www.portaudio.com/) library will be used.
-Alternatively, it is possible to force PortAudio back-end on Linux systems by adding
-`-DENABLE_PORTAUDIO=ON` to the CMake configuration step.
+technology, [PipeWire](https://pipewire.org) (if `-DENABLE_PIPEWIRE=ON` is specified during the
+CMake configuration step) or [PortAudio](http://www.portaudio.com/) (`-DENABLE_PORTAUDIO=ON`).
+For all other systems, PortAudio library will be used exclusively.
 
 Currently this application supports four output formats:
 

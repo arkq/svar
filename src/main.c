@@ -23,7 +23,11 @@
 #include <sys/time.h>
 #include <time.h>
 
-#if ENABLE_PORTAUDIO
+#if ENABLE_PIPEWIRE
+# include <pipewire/pipewire.h>
+# include <spa/param/audio/format-utils.h>
+# include <spa/utils/result.h>
+#elif ENABLE_PORTAUDIO
 # include <portaudio.h>
 #else
 # include <alsa/asoundlib.h>
@@ -52,7 +56,7 @@ static int verbose = 0;
 #if ENABLE_PORTAUDIO
 static int pcm_device_id = 0;
 #else
-static char pcm_device[25] = "default";
+static char pcm_device[64] = "default";
 #endif
 static enum pcm_format pcm_format = PCM_FORMAT_S16LE;
 static unsigned int pcm_channels = 1;
@@ -85,11 +89,18 @@ static long output_split_time_ms = 0; /* disable splitting by default */
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
+#if ENABLE_PIPEWIRE
+static struct pw_main_loop * pw_main_loop = NULL;
+#endif
+
 static bool active = true;
 static struct rbuf rb;
 
 static void main_loop_stop(int sig) {
 	active = false;
+#if ENABLE_PIPEWIRE
+	pw_main_loop_quit(pw_main_loop);
+#endif
 	(void)sig;
 }
 
@@ -112,7 +123,7 @@ static const char * output_file_name(void) {
 	return name;
 }
 
-#if !ENABLE_PORTAUDIO
+#if !ENABLE_PIPEWIRE && !ENABLE_PORTAUDIO
 /* Set ALSA hardware parameters. */
 static int pcm_set_hw_params(snd_pcm_t *pcm, char **msg) {
 
@@ -233,8 +244,7 @@ static bool check_activation_threshold(const void * buffer, size_t samples) {
 	return false;
 }
 
-#if ENABLE_PORTAUDIO
-
+#if ENABLE_PIPEWIRE || ENABLE_PORTAUDIO
 static void process_audio(const void * buffer, size_t samples) {
 
 	if (!check_activation_threshold(buffer, samples))
@@ -270,6 +280,35 @@ static void process_audio(const void * buffer, size_t samples) {
 	}
 
 }
+#endif
+
+#if ENABLE_PIPEWIRE
+
+/* Callback function for PipeWire capture. */
+static void pw_capture_callback(void * data) {
+	struct pw_stream ** stream = data;
+
+	struct pw_buffer * b;
+	if ((b = pw_stream_dequeue_buffer(*stream)) == NULL) {
+		warn("Couldn't dequeue PipeWire capture buffer");
+		return;
+	}
+
+	struct spa_buffer * buf = b->buffer;
+	struct spa_data * d = &buf->datas[0];
+
+	if (d->data == NULL)
+		return;
+
+	process_audio(
+			SPA_PTROFF(d->data, d->chunk->offset, void),
+			d->chunk->size / pcm_format_size(pcm_format, 1));
+
+	pw_stream_queue_buffer(*stream, b);
+
+}
+
+#elif ENABLE_PORTAUDIO
 
 /* Callback function for PortAudio capture. */
 static int pa_capture_callback(const void * inputBuffer, void * outputBuffer,
@@ -592,13 +631,61 @@ int main(int argc, char *argv[]) {
 	if (optind < argc)
 		template = argv[optind];
 
-#if !ENABLE_PORTAUDIO
+#if !ENABLE_PIPEWIRE && !ENABLE_PORTAUDIO
 	pthread_t thread_alsa_capture_id;
 #endif
 	pthread_t thread_process_id;
 	int err;
 
-#if ENABLE_PORTAUDIO
+#if ENABLE_PIPEWIRE
+
+	static const enum spa_audio_format pw_format_mapping[] = {
+		[PCM_FORMAT_U8] = SPA_AUDIO_FORMAT_U8,
+		[PCM_FORMAT_S16LE] = SPA_AUDIO_FORMAT_S16_LE,
+	};
+
+	static const struct pw_stream_events pw_stream_events = {
+		PW_VERSION_STREAM_EVENTS,
+		.process = pw_capture_callback,
+	};
+
+	uint8_t buffer[1024];
+	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
+
+	pw_init(NULL, NULL);
+
+	if ((pw_main_loop = pw_main_loop_new(NULL)) == NULL) {
+		error("Couldn't create PipeWire main loop");
+		return EXIT_FAILURE;
+	}
+
+	struct pw_properties * props = pw_properties_new(
+			PW_KEY_MEDIA_TYPE, "Audio",
+			PW_KEY_MEDIA_CATEGORY, "Capture",
+			PW_KEY_MEDIA_ROLE, "DSP",
+			PW_KEY_TARGET_OBJECT, pcm_device,
+			NULL);
+
+	struct pw_stream * stream;
+	stream = pw_stream_new_simple(pw_main_loop_get_loop(pw_main_loop), "svar",
+			props, &pw_stream_events, &stream);
+
+	const struct spa_pod * params[1];
+	params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat,
+			&SPA_AUDIO_INFO_RAW_INIT(
+				.format = pw_format_mapping[pcm_format],
+				.channels = pcm_channels,
+				.rate = pcm_rate));
+
+	int ret;
+	if ((ret = pw_stream_connect(stream, PW_DIRECTION_INPUT, PW_ID_ANY,
+					PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS,
+					params, 1)) < 0) {
+		error("Couldn't connect PipeWire stream: %s", spa_strerror(ret));
+		return EXIT_FAILURE;
+	}
+
+#elif ENABLE_PORTAUDIO
 
 	static const PaSampleFormat pa_pcm_format_mapping[] = {
 		[PCM_FORMAT_U8] = paUInt8,
@@ -688,7 +775,9 @@ int main(int argc, char *argv[]) {
 	sigaction(SIGTERM, &sigact, NULL);
 	sigaction(SIGINT, &sigact, NULL);
 
-#if ENABLE_PORTAUDIO
+#if ENABLE_PIPEWIRE
+	/* PipeWire stream will start automatically when connected. */
+#elif ENABLE_PORTAUDIO
 	if ((pa_err = Pa_StartStream(pa_stream)) != paNoError) {
 		error("Couldn't start PortAudio stream: %s", Pa_GetErrorText(pa_err));
 		return EXIT_FAILURE;
@@ -706,7 +795,9 @@ int main(int argc, char *argv[]) {
 		return EXIT_FAILURE;
 	}
 
-#if ENABLE_PORTAUDIO
+#if ENABLE_PIPEWIRE
+	pw_main_loop_run(pw_main_loop);
+#elif ENABLE_PORTAUDIO
 	while ((pa_err = Pa_IsStreamActive(pa_stream)) == 1)
 		Pa_Sleep(1000);
 	if (pa_err < 0)
