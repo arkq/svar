@@ -9,6 +9,9 @@ project(svar
 	DESCRIPTION "Simple Voice Activated Recorder"
 	LANGUAGES C)
 
+option(BUILD_TESTING "Build the testing tree." OFF)
+include(CTest)
+
 if(CMAKE_BUILD_TYPE MATCHES Debug)
 	set(DEBUG TRUE)
 endif()
@@ -33,13 +36,10 @@ include_directories(${PROJECT_BINARY_DIR})
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 find_package(PkgConfig REQUIRED)
 
-add_executable(svar
-	src/pcm.c
-	src/rbuf.c
-	src/writer.c
-	src/main.c)
+add_library(svarcore STATIC src/pcm.c src/rbuf.c src/writer.c)
+add_executable(svar src/main.c)
 
-target_link_libraries(svar m)
+target_link_libraries(svar svarcore m)
 
 find_package(Threads REQUIRED)
 target_link_libraries(svar Threads::Threads)
@@ -54,20 +54,35 @@ endif()
 
 if(ENABLE_SNDFILE)
 	pkg_check_modules(SNDFile REQUIRED IMPORTED_TARGET sndfile)
-	target_sources(svar PRIVATE src/writer-wav.c)
-	target_link_libraries(svar PkgConfig::SNDFile)
+	target_sources(svarcore PRIVATE src/writer-wav.c)
+	target_link_libraries(svarcore PkgConfig::SNDFile)
 endif()
 
 if(ENABLE_MP3LAME)
 	find_package(Mp3Lame REQUIRED)
-	target_sources(svar PRIVATE src/writer-mp3.c)
-	target_link_libraries(svar Mp3Lame::Mp3Lame)
+	target_sources(svarcore PRIVATE src/writer-mp3.c)
+	target_link_libraries(svarcore Mp3Lame::Mp3Lame)
 endif()
 
 if(ENABLE_VORBIS)
 	pkg_check_modules(VorbisOgg REQUIRED IMPORTED_TARGET vorbis vorbisenc ogg)
-	target_sources(svar PRIVATE src/writer-ogg.c)
-	target_link_libraries(svar PkgConfig::VorbisOgg)
+	target_sources(svarcore PRIVATE src/writer-ogg.c)
+	target_link_libraries(svarcore PkgConfig::VorbisOgg)
+endif()
+
+if(BUILD_TESTING)
+
+	file(GLOB_RECURSE TEST_SOURCES test/tc-*.c)
+	pkg_check_modules(Check REQUIRED IMPORTED_TARGET check)
+
+	foreach(TEST_SOURCE ${TEST_SOURCES})
+		get_filename_component(TEST_NAME ${TEST_SOURCE} NAME_WE)
+		add_executable(${TEST_NAME} ${TEST_SOURCE} test/test-runner.c)
+		target_include_directories(${TEST_NAME} PRIVATE ${PROJECT_SOURCE_DIR}/src)
+		target_link_libraries(${TEST_NAME} svarcore PkgConfig::Check)
+		add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+	endforeach()
+
 endif()
 
 install(TARGETS svar

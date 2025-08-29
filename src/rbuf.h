@@ -9,7 +9,6 @@
 #define SVAR_RBUF_H_
 
 #include <stddef.h>
-#include <stdint.h>
 
 struct rbuf {
 	/* read pointer */

@@ -6,6 +6,7 @@
 
 #include "rbuf.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 
 int rbuf_init(struct rbuf * rb, size_t nmemb, size_t size) {
@@ -28,12 +29,11 @@ void rbuf_free(struct rbuf * rb) {
 /**
  * Number of elements available for linear read. */
 size_t rbuf_read_linear_capacity(const struct rbuf * rb) {
-	if (rb->head == rb->tail)
-		return rb->used;
-	if (rb->head <= rb->tail)
+	if (rb->head < rb->tail)
 		return ((uint8_t *)rb->tail - (uint8_t *)rb->head) / rb->size;
 	/* Get the number of elements from the tail to the end of the buffer. */
-	return ((uint8_t *)rb->end - (uint8_t *)rb->head) / rb->size;
+	const size_t nmemb = ((uint8_t *)rb->end - (uint8_t *)rb->head) / rb->size;
+	return rb->used == 0 ? 0 : nmemb;
 }
 
 /**
@@ -51,12 +51,11 @@ void rbuf_read_linear_commit(struct rbuf * rb, size_t nmemb) {
 /**
  * Number of elements available for linear write. */
 size_t rbuf_write_linear_capacity(const struct rbuf * rb) {
-	if (rb->tail == rb->head)
-		return rb->nmemb - rb->used;
-	if (rb->tail <= rb->head)
+	if (rb->tail < rb->head)
 		return ((uint8_t *)rb->head - (uint8_t *)rb->tail) / rb->size;
 	/* Get the number of elements from the tail to the end of the buffer. */
-	return ((uint8_t *)rb->end - (uint8_t *)rb->tail) / rb->size;
+	const size_t nmemb = ((uint8_t *)rb->end - (uint8_t *)rb->tail) / rb->size;
+	return rb->used == rb->nmemb ? 0 : nmemb;
 }
 
 /**

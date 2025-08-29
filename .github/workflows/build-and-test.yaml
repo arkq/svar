@@ -23,6 +23,7 @@ jobs:
       run: |
         sudo apt update
         sudo apt install --yes --quiet --no-install-recommends \
+          check \
           libasound2-dev \
           libmp3lame-dev \
           libogg-dev \
@@ -41,6 +42,7 @@ jobs:
       run: >
         cmake $GITHUB_WORKSPACE
         -DCMAKE_BUILD_TYPE=${{ matrix.build-type }}
+        -DBUILD_TESTING=ON
         -D${{ matrix.port-audio }}
         -DENABLE_MP3LAME=ON
         -DENABLE_SNDFILE=ON

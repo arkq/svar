@@ -235,6 +235,42 @@ static bool check_activation_threshold(const void * buffer, size_t samples) {
 
 #if ENABLE_PORTAUDIO
 
+static void process_audio(const void * buffer, size_t samples) {
+
+	if (!check_activation_threshold(buffer, samples))
+		return;
+
+	while (samples > 0) {
+
+		pthread_mutex_lock(&mutex);
+
+		const size_t rb_wr_capacity_samples = rbuf_write_linear_capacity(&rb);
+		const size_t batch_samples = MIN(samples, rb_wr_capacity_samples);
+		const size_t batch_sample_bytes = pcm_format_size(pcm_format, batch_samples);
+
+		if (rb_wr_capacity_samples == 0) {
+			if (verbose >= 1)
+				warn("PCM buffer overrun: %s", "Ring buffer full");
+			pthread_mutex_unlock(&mutex);
+			break;
+		}
+
+		memcpy(rb.tail, buffer, batch_sample_bytes);
+		rbuf_write_linear_commit(&rb, batch_samples);
+
+		buffer = (const unsigned char *)buffer + batch_sample_bytes;
+		samples -= batch_samples;
+
+		pthread_mutex_unlock(&mutex);
+
+		/* Wake up the processing thread to process audio or to close
+		 * the current writer if split time was exceeded. */
+		pthread_cond_signal(&cond);
+
+	}
+
+}
+
 /* Callback function for PortAudio capture. */
 static int pa_capture_callback(const void * inputBuffer, void * outputBuffer,
 		unsigned long framesPerBuffer, const PaStreamCallbackTimeInfo * timeInfo,
@@ -243,39 +279,7 @@ static int pa_capture_callback(const void * inputBuffer, void * outputBuffer,
 	(void)timeInfo;
 	(void)statusFlags;
 	(void)userData;
-
-	unsigned long samplesPerBuffer = framesPerBuffer * pcm_channels;
-	if (check_activation_threshold(inputBuffer, samplesPerBuffer)) {
-
-		pthread_mutex_lock(&mutex);
-
-		while (samplesPerBuffer > 0) {
-			const size_t rb_wr_capacity_samples = rbuf_write_linear_capacity(&rb);
-			const size_t samples = MIN(samplesPerBuffer, rb_wr_capacity_samples);
-			const size_t sample_bytes = pcm_format_size(pcm_format, samples);
-
-			if (rb_wr_capacity_samples == 0) {
-				if (verbose >= 1)
-					warn("PCM buffer overrun: %s", "Ring buffer full");
-				break;
-			}
-
-			memcpy(rb.tail, inputBuffer, sample_bytes);
-			rbuf_write_linear_commit(&rb, samples);
-
-			inputBuffer = (const char *)inputBuffer + sample_bytes;
-			samplesPerBuffer -= samples;
-
-		}
-
-		pthread_mutex_unlock(&mutex);
-
-	}
-
-	/* Wake up the processing thread to process audio or to close
-	 * the current writer if split time was exceeded. */
-	pthread_cond_signal(&cond);
-
+	process_audio(inputBuffer, framesPerBuffer * pcm_channels);
 	return active ? paContinue : paComplete;
 }
 
