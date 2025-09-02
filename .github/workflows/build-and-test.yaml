@@ -34,7 +34,7 @@ jobs:
           libsndfile1-dev \
           libvorbis-dev \
           portaudio19-dev
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
     - name: Create Build Environment
       run: cmake -E make_directory ${{ github.workspace }}/build
     - name: Configure CMake
