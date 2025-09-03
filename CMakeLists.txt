@@ -37,7 +37,7 @@ include_directories(${PROJECT_BINARY_DIR})
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 find_package(PkgConfig REQUIRED)
 
-add_library(svarcore STATIC src/pcm.c src/rbuf.c src/writer.c)
+add_library(svarcore STATIC src/pcm.c src/rbuf.c src/recorder.c src/writer.c)
 add_executable(svar src/main.c)
 
 target_link_libraries(svar svarcore m)

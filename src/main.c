@@ -36,6 +36,7 @@
 #include "log.h"
 #include "pcm.h"
 #include "rbuf.h"
+#include "recorder.h"
 #include "writer.h"
 #if ENABLE_MP3LAME
 # include "writer-mp3.h"
@@ -70,6 +71,9 @@ static bool signal_meter = false;
 
 /* Selected output writer. */
 static struct writer * writer = NULL;
+/* Selected audio recorder. */
+static struct recorder * recorder = NULL;
+
 /* The strftime() format template for output file. */
 static const char * template = "rec-%d-%H:%M:%S";
 
@@ -79,48 +83,22 @@ static int bitrate_nom = 64000;
 static int bitrate_max = 128000;
 
 /* The activation threshold level in dB. */
-static double activation_threshold_level = -50.0;
+static double activation_threshold_level_db = -50.0;
 /* The activation fadeout time - the time after the last activation signal. */
 static long activation_fadeout_time_ms = 500;
 /* The split time in seconds for creating new output file. */
 static long output_split_time_ms = 0; /* disable splitting by default */
 
-/* Reader/writer synchronization. */
-static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
-
 #if ENABLE_PIPEWIRE
 static struct pw_main_loop * pw_main_loop = NULL;
 #endif
 
-static bool active = true;
-static struct rbuf rb;
-
 static void main_loop_stop(int sig) {
-	active = false;
+	recorder->started = false;
 #if ENABLE_PIPEWIRE
 	pw_main_loop_quit(pw_main_loop);
 #endif
 	(void)sig;
-}
-
-static time_t ts_diff_ms(const struct timespec * ts1, const struct timespec * ts2) {
-	return (ts1->tv_sec - ts2->tv_sec) * 1000 + (ts1->tv_nsec - ts2->tv_nsec) / 1000000;
-}
-
-static const char * output_file_name(void) {
-
-	struct tm now;
-	const time_t tmp = time(NULL);
-	localtime_r(&tmp, &now);
-
-	char base[192];
-	static char name[sizeof(base) + 4];
-	strftime(base, sizeof(base), template, &now);
-	snprintf(name, sizeof(name), "%s.%s",
-			base, writer_type_to_string(writer->type));
-
-	return name;
 }
 
 #if !ENABLE_PIPEWIRE && !ENABLE_PORTAUDIO
@@ -220,68 +198,6 @@ static void pa_list_devices(void) {
 }
 #endif
 
-static bool check_activation_threshold(const void * buffer, size_t samples) {
-
-	static struct timespec activation_time = { 0 };
-	double buffer_rms_db = pcm_rms_db(pcm_format, buffer, samples);
-
-	if (signal_meter) {
-		/* Dump current RMS values to the stdout. */
-		printf("\rSignal RMS: %#5.1f dB\r", buffer_rms_db);
-		fflush(stdout);
-		return false;
-	}
-
-	/* Update time if the signal RMS in the buffer exceeds the threshold. */
-	if (buffer_rms_db > activation_threshold_level)
-		clock_gettime(CLOCK_MONOTONIC_RAW, &activation_time);
-
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC_RAW, &now);
-	if (ts_diff_ms(&now, &activation_time) < activation_fadeout_time_ms)
-		return true;
-
-	return false;
-}
-
-#if ENABLE_PIPEWIRE || ENABLE_PORTAUDIO
-static void process_audio(const void * buffer, size_t samples) {
-
-	if (!check_activation_threshold(buffer, samples))
-		return;
-
-	while (samples > 0) {
-
-		pthread_mutex_lock(&mutex);
-
-		const size_t rb_wr_capacity_samples = rbuf_write_linear_capacity(&rb);
-		const size_t batch_samples = MIN(samples, rb_wr_capacity_samples);
-		const size_t batch_sample_bytes = pcm_format_size(pcm_format, batch_samples);
-
-		if (rb_wr_capacity_samples == 0) {
-			if (verbose >= 1)
-				warn("PCM buffer overrun: %s", "Ring buffer full");
-			pthread_mutex_unlock(&mutex);
-			break;
-		}
-
-		memcpy(rb.tail, buffer, batch_sample_bytes);
-		rbuf_write_linear_commit(&rb, batch_samples);
-
-		buffer = (const unsigned char *)buffer + batch_sample_bytes;
-		samples -= batch_samples;
-
-		pthread_mutex_unlock(&mutex);
-
-		/* Wake up the processing thread to process audio or to close
-		 * the current writer if split time was exceeded. */
-		pthread_cond_signal(&cond);
-
-	}
-
-}
-#endif
-
 #if ENABLE_PIPEWIRE
 
 /* Callback function for PipeWire capture. */
@@ -300,7 +216,7 @@ static void pw_capture_callback(void * data) {
 	if (d->data == NULL)
 		return;
 
-	process_audio(
+	recorder_process(recorder,
 			SPA_PTROFF(d->data, d->chunk->offset, void),
 			d->chunk->size / pcm_format_size(pcm_format, 1));
 
@@ -318,8 +234,8 @@ static int pa_capture_callback(const void * inputBuffer, void * outputBuffer,
 	(void)timeInfo;
 	(void)statusFlags;
 	(void)userData;
-	process_audio(inputBuffer, framesPerBuffer * pcm_channels);
-	return active ? paContinue : paComplete;
+	recorder_process(recorder, inputBuffer, framesPerBuffer * pcm_channels);
+	return recorder->started ? paContinue : paComplete;
 }
 
 #else
@@ -328,14 +244,14 @@ static int pa_capture_callback(const void * inputBuffer, void * outputBuffer,
 static void *alsa_capture_thread(void *arg) {
 	snd_pcm_t * pcm = arg;
 
-	while (active) {
+	while (recorder->started) {
 
-		pthread_mutex_lock(&mutex);
-		const size_t samples = rbuf_write_linear_capacity(&rb);
-		pthread_mutex_unlock(&mutex);
+		pthread_mutex_lock(&recorder->mutex);
+		const size_t samples = rbuf_write_linear_capacity(&recorder->rb);
+		pthread_mutex_unlock(&recorder->mutex);
 
 		snd_pcm_sframes_t frames = samples / pcm_channels;
-		if ((frames = snd_pcm_readi(pcm, rb.tail, MIN(frames, pcm_read_frames))) < 0)
+		if ((frames = snd_pcm_readi(pcm, recorder->rb.tail, MIN(frames, pcm_read_frames))) < 0)
 			switch (frames) {
 			case -EPIPE:
 			case -ESTRPIPE:
@@ -351,15 +267,15 @@ static void *alsa_capture_thread(void *arg) {
 				continue;
 			}
 
-		if (check_activation_threshold(rb.tail, frames * pcm_channels)) {
-			pthread_mutex_lock(&mutex);
-			rbuf_write_linear_commit(&rb, frames * pcm_channels);
-			pthread_mutex_unlock(&mutex);
+		if (recorder_monitor(recorder, recorder->rb.tail, frames * pcm_channels) == 0) {
+			pthread_mutex_lock(&recorder->mutex);
+			rbuf_write_linear_commit(&recorder->rb, frames * pcm_channels);
+			pthread_mutex_unlock(&recorder->mutex);
 		}
 
 		/* Wake up the processing thread to process audio or to close
 		 * the current writer if split time was exceeded. */
-		pthread_cond_signal(&cond);
+		pthread_cond_signal(&recorder->cond);
 
 	}
 
@@ -367,67 +283,6 @@ static void *alsa_capture_thread(void *arg) {
 }
 
 #endif
-
-/* Audio signal data processing thread. */
-static void *processing_thread(void *arg) {
-	(void)arg;
-
-	if (signal_meter)
-		return NULL;
-
-	struct timespec ts_last_write = { 0 };
-	struct timespec ts_now;
-	size_t samples = 0;
-
-	while (true) {
-
-		pthread_mutex_lock(&mutex);
-
-		while (active && (samples = rbuf_read_linear_capacity(&rb)) == 0) {
-			/* Wait for the reader to fill the buffer. */
-			pthread_cond_wait(&cond, &mutex);
-			/* If split time is enabled and writer is opened,
-			 * check if we need to close the current writer. */
-			if (output_split_time_ms && writer->opened) {
-				clock_gettime(CLOCK_MONOTONIC_RAW, &ts_now);
-				if (ts_diff_ms(&ts_now, &ts_last_write) > output_split_time_ms) {
-					if (verbose >= 1)
-						info("Closing current output file");
-					writer->close(writer);
-				}
-			}
-		}
-
-		pthread_mutex_unlock(&mutex);
-
-		if (!active)
-			break;
-
-		if (!writer->opened) {
-			const char * name = output_file_name();
-			if (verbose >= 1)
-				info("Creating new output file: %s", name);
-			if (writer->open(writer, name) == -1) {
-				error("Couldn't open writer: %s", strerror(errno));
-				goto fail;
-			}
-		}
-
-		clock_gettime(CLOCK_MONOTONIC_RAW, &ts_last_write);
-		writer->write(writer, rb.head, samples / pcm_channels);
-
-		pthread_mutex_lock(&mutex);
-		rbuf_read_linear_commit(&rb, samples);
-		pthread_mutex_unlock(&mutex);
-
-	}
-
-fail:
-	if (writer->opened && verbose >= 1)
-		info("Closing current output file");
-	writer->free(writer);
-	return 0;
-}
 
 int main(int argc, char *argv[]) {
 
@@ -513,7 +368,7 @@ int main(int argc, char *argv[]) {
 					pcm_channels,
 					pcm_format_name(pcm_format),
 					pcm_rate,
-					activation_threshold_level,
+					activation_threshold_level_db,
 					activation_fadeout_time_ms * 0.001,
 					output_split_time_ms * 0.001,
 					template);
@@ -614,7 +469,7 @@ int main(int argc, char *argv[]) {
 			break;
 
 		case 'l' /* --level=NUM */ :
-			activation_threshold_level = atof(optarg);
+			activation_threshold_level_db = atof(optarg);
 			break;
 		case 'o' /* --fadeout=SEC */ :
 			activation_fadeout_time_ms = atof(optarg) * 1000;
@@ -634,7 +489,6 @@ int main(int argc, char *argv[]) {
 #if !ENABLE_PIPEWIRE && !ENABLE_PORTAUDIO
 	pthread_t thread_alsa_capture_id;
 #endif
-	pthread_t thread_process_id;
 	int err;
 
 #if ENABLE_PIPEWIRE
@@ -729,6 +583,11 @@ int main(int argc, char *argv[]) {
 
 #endif
 
+	if ((recorder = recorder_new(pcm_format, pcm_channels, pcm_rate)) == NULL) {
+		error("Couldn't create audio recorder: %s", strerror(errno));
+		return EXIT_FAILURE;
+	}
+
 	switch (type) {
 	case WRITER_TYPE_RAW:
 		writer = writer_raw_new(pcm_format, pcm_channels);
@@ -765,12 +624,6 @@ int main(int argc, char *argv[]) {
 	if (verbose >= 1)
 		print_audio_info();
 
-	const size_t rb_nmemb = pcm_channels * pcm_read_frames * 8;
-	if (rbuf_init(&rb, rb_nmemb, pcm_format_size(pcm_format, 1)) != 0) {
-		error("Couldn't create ring buffer: %s", strerror(errno));
-		return EXIT_FAILURE;
-	}
-
 	struct sigaction sigact = { .sa_handler = main_loop_stop, .sa_flags = SA_RESETHAND };
 	sigaction(SIGTERM, &sigact, NULL);
 	sigaction(SIGINT, &sigact, NULL);
@@ -789,9 +642,12 @@ int main(int argc, char *argv[]) {
 	}
 #endif
 
-	/* initialize thread for data processing */
-	if ((err = pthread_create(&thread_process_id, NULL, &processing_thread, NULL)) != 0) {
-		error("Couldn't create processing thread: %s", strerror(-err));
+	recorder->monitor = signal_meter;
+	recorder->verbose = verbose;
+
+	if (recorder_start(recorder, writer, template, activation_threshold_level_db,
+				activation_fadeout_time_ms, output_split_time_ms) == -1) {
+		error("Couldn't start audio recorder: %s", strerror(errno));
 		return EXIT_FAILURE;
 	}
 
@@ -807,15 +663,7 @@ int main(int argc, char *argv[]) {
 #endif
 
 	/* Gracefully stop the processing thread. */
-	pthread_mutex_lock(&mutex);
-	active = false;
-	pthread_mutex_unlock(&mutex);
-	pthread_cond_signal(&cond);
-
-	pthread_join(thread_process_id, NULL);
-
-	if (signal_meter)
-		printf("\n");
+	recorder_stop(recorder);
 
 	return EXIT_SUCCESS;
 }

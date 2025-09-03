@@ -17,7 +17,7 @@ const char * pcm_format_name(enum pcm_format format) {
 	case PCM_FORMAT_S16LE:
 		return "S16LE";
 	}
-	return "UNKNOWN";
+	return "INVALID";
 }
 
 size_t pcm_format_size(enum pcm_format format, size_t samples) {
