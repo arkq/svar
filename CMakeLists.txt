@@ -5,7 +5,7 @@
 cmake_minimum_required(VERSION 3.11)
 
 project(svar
-	VERSION 1.4.0
+	VERSION 2.0.0
 	DESCRIPTION "Simple Voice Activated Recorder"
 	LANGUAGES C)
 
@@ -16,11 +16,13 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
 	set(DEBUG TRUE)
 endif()
 
-if(CMAKE_SYSTEM_NAME MATCHES Linux)
-	option(ENABLE_PIPEWIRE "Use PipeWire as an audio back-end.")
-	option(ENABLE_PORTAUDIO "Use PortAudio as an audio back-end.")
-else()
-	set(ENABLE_PORTAUDIO ON)
+option(ENABLE_ALSA "Use ALSA as an audio back-end." ON)
+option(ENABLE_PIPEWIRE "Use PipeWire as an audio back-end.")
+option(ENABLE_PORTAUDIO "Use PortAudio as an audio back-end.")
+
+# Make sure at least one audio back-end is enabled.
+if(NOT (ENABLE_ALSA OR ENABLE_PIPEWIRE OR ENABLE_PORTAUDIO))
+	message(FATAL_ERROR "At least one audio back-end must be enabled.")
 endif()
 
 option(ENABLE_MP3LAME "Enable MP3 support.")
@@ -45,20 +47,22 @@ target_link_libraries(svar svarcore m)
 find_package(Threads REQUIRED)
 target_link_libraries(svar Threads::Threads)
 
-if(ENABLE_PIPEWIRE AND ENABLE_PORTAUDIO)
-	message(FATAL_ERROR
-		"Only one of ENABLE_PIPEWIRE or ENABLE_PORTAUDIO can be enabled.")
+if(ENABLE_ALSA)
+	pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
+	target_sources(svar PRIVATE src/recorder-alsa.c)
+	target_link_libraries(svar PkgConfig::ALSA)
 endif()
 
 if(ENABLE_PIPEWIRE)
 	pkg_check_modules(PipeWire REQUIRED IMPORTED_TARGET libpipewire-0.3)
+	target_sources(svar PRIVATE src/recorder-pipewire.c)
 	target_link_libraries(svar PkgConfig::PipeWire)
-elseif(ENABLE_PORTAUDIO)
+endif()
+
+if(ENABLE_PORTAUDIO)
 	pkg_check_modules(PortAudio REQUIRED IMPORTED_TARGET portaudio-2.0)
+	target_sources(svar PRIVATE src/recorder-portaudio.c)
 	target_link_libraries(svar PkgConfig::PortAudio)
-else()
-	pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
-	target_link_libraries(svar PkgConfig::ALSA)
 endif()
 
 if(ENABLE_SNDFILE)

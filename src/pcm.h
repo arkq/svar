@@ -9,7 +9,6 @@
 #define SVAR_PCM_H_
 
 #include <stddef.h>
-#include <sys/types.h>
 
 /* Supported PCM formats. */
 enum pcm_format {

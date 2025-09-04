@@ -6,10 +6,10 @@
 
 #include "writer.h"
 
-#include <errno.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#include "pcm.h"
 
 struct writer_raw {
 	size_t frame_size;

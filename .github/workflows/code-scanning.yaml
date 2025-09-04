@@ -30,10 +30,11 @@ jobs:
           libasound2-dev \
           libmp3lame-dev \
           libogg-dev \
+          libpipewire-0.3-dev \
           libsndfile1-dev \
           libvorbis-dev \
           portaudio19-dev
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v3
       with:
@@ -50,6 +51,8 @@ jobs:
       run: >
         cmake $GITHUB_WORKSPACE
         -DCMAKE_BUILD_TYPE=${{ matrix.build-type }}
+        -DENABLE_ALSA=ON
+        -DENABLE_PIPEWIRE=ON
         -DENABLE_PORTAUDIO=ON
         -DENABLE_MP3LAME=ON
         -DENABLE_SNDFILE=ON

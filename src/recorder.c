@@ -9,17 +9,38 @@
 #include "recorder.h"
 
 #include <errno.h>
-#include <stdlib.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
 #include <sys/param.h>
 #include <time.h>
 
 #include "log.h"
+#include "pcm.h"
+#include "rbuf.h"
+#include "writer.h"
 
 static time_t ts_diff_ms(const struct timespec * ts1, const struct timespec * ts2) {
 	return (ts1->tv_sec - ts2->tv_sec) * 1000 + (ts1->tv_nsec - ts2->tv_nsec) / 1000000;
+}
+
+const char * recorder_type_to_string(enum recorder_type type) {
+	switch (type) {
+#if ENABLE_ALSA
+	case RECORDER_TYPE_ALSA:
+		return "ALSA";
+#endif
+#if ENABLE_PIPEWIRE
+	case RECORDER_TYPE_PIPEWIRE:
+		return "PipeWire";
+#endif
+#if ENABLE_PORTAUDIO
+	case RECORDER_TYPE_PORTAUDIO:
+		return "PortAudio";
+#endif
+	}
+	return "unknown";
 }
 
 struct recorder * recorder_new(
@@ -52,11 +73,23 @@ fail:
 
 void recorder_free(
 		struct recorder * r) {
+	r->free(r);
 	pthread_mutex_destroy(&r->mutex);
 	pthread_cond_destroy(&r->cond);
 	free(r->output_file_template);
 	rbuf_free(&r->rb);
 	free(r);
+}
+
+void recorder_list_devices(
+		struct recorder * r) {
+	r->list(r);
+}
+
+int recorder_open(
+		struct recorder * r,
+		const char * device) {
+	return r->open(r, device);
 }
 
 static void * recorder_thread(void * arg) {
@@ -130,8 +163,6 @@ fail:
 	return NULL;
 }
 
-static pthread_t recorder_thread_id;
-
 int recorder_start(
 		struct recorder * r,
 		struct writer * w,
@@ -148,26 +179,31 @@ int recorder_start(
 	r->w = w;
 
 	int err;
+	pthread_t th;
 	/* Initialize thread for data processing. */
-	if ((err = pthread_create(&recorder_thread_id, NULL, &recorder_thread, r)) != 0)
+	if ((err = pthread_create(&th, NULL, &recorder_thread, r)) != 0)
 		return errno = err, -1;
 
-	return 0;
-}
-
-int recorder_stop(
-		struct recorder * r) {
+	/* Start the recorder backend. */
+	r->start(r);
 
 	pthread_mutex_lock(&r->mutex);
 	r->started = false;
 	pthread_mutex_unlock(&r->mutex);
 	pthread_cond_signal(&r->cond);
 
-	pthread_join(recorder_thread_id, NULL);
+	pthread_join(th, NULL);
 
 	if (r->monitor)
 		printf("\n");
 
+	return 0;
+}
+
+int recorder_stop(
+		struct recorder * r) {
+	r->started = false;
+	r->stop(r);
 	return 0;
 }
 

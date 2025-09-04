@@ -7,14 +7,18 @@
 #include "writer-ogg.h"
 
 #include <errno.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 
+#include <ogg/ogg.h>
+#include <vorbis/codec.h>
 #include <vorbis/vorbisenc.h>
 
 #include "log.h"
+#include "pcm.h"
 #include "writer.h"
 
 struct writer_ogg {

@@ -16,9 +16,8 @@ jobs:
       matrix:
         build-type: [ Debug, Release ]
         audio-backend:
-          - -DENABLE_PIPEWIRE=OFF -DENABLE_PORTAUDIO=OFF
-          - -DENABLE_PIPEWIRE=ON  -DENABLE_PORTAUDIO=OFF
-          - -DENABLE_PIPEWIRE=OFF -DENABLE_PORTAUDIO=ON
+          - -DENABLE_ALSA=ON
+          - -DENABLE_ALSA=ON -DENABLE_PIPEWIRE=ON -DENABLE_PORTAUDIO=ON
       fail-fast: false
     runs-on: ubuntu-latest
     steps:
@@ -34,7 +33,7 @@ jobs:
           libsndfile1-dev \
           libvorbis-dev \
           portaudio19-dev
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
     - name: Create Build Environment
       run: cmake -E make_directory ${{ github.workspace }}/build
     - name: Configure CMake

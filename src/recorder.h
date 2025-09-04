@@ -8,6 +8,10 @@
 #ifndef SVAR_RECORDER_H_
 #define SVAR_RECORDER_H_
 
+#if HAVE_CONFIG_H
+# include "config.h"
+#endif
+
 #include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -16,8 +20,21 @@
 #include "rbuf.h"
 #include "writer.h"
 
+enum recorder_type {
+#if ENABLE_ALSA
+	RECORDER_TYPE_ALSA,
+#endif
+#if ENABLE_PIPEWIRE
+	RECORDER_TYPE_PIPEWIRE,
+#endif
+#if ENABLE_PORTAUDIO
+	RECORDER_TYPE_PORTAUDIO,
+#endif
+};
+
 struct recorder {
 
+	enum recorder_type type;
 	enum pcm_format format;
 	unsigned int channels;
 	unsigned int rate;
@@ -41,7 +58,19 @@ struct recorder {
 	/* Logging verbosity level. */
 	int verbose;
 
+	/* Implementation specific functions. */
+	int (*open)(struct recorder * r, const char * device);
+	int (*start)(struct recorder * r);
+	void (*stop)(struct recorder * r);
+	void (*list)(struct recorder * r);
+	void (*free)(struct recorder * r);
+
+	/* Implementation specific data. */
+	void * r;
+
 };
+
+const char * recorder_type_to_string(enum recorder_type type);
 
 struct recorder * recorder_new(
 		enum pcm_format format,
@@ -50,6 +79,13 @@ struct recorder * recorder_new(
 
 void recorder_free(
 		struct recorder * r);
+
+void recorder_list_devices(
+		struct recorder * r);
+
+int recorder_open(
+		struct recorder * r,
+		const char * device);
 
 int recorder_start(
 		struct recorder * r,

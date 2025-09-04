@@ -7,12 +7,13 @@ audio when a specified signal level is exceeded. It is commonly known solution c
 Operated Recording (VOR). When the signal level is low for longer than the fadeout time, audio
 recording is paused.
 
-On Linux systems, capturing the audio signal is based on the [ALSA](http://www.alsa-project.org/)
-technology, [PipeWire](https://pipewire.org) (if `-DENABLE_PIPEWIRE=ON` is specified during the
-CMake configuration step) or [PortAudio](http://www.portaudio.com/) (`-DENABLE_PORTAUDIO=ON`).
-For all other systems, PortAudio library will be used exclusively.
+Supported audio backends:
 
-Currently this application supports four output formats:
+- [ALSA](http://www.alsa-project.org/) - Advanced Linux Sound Architecture (Linux only)
+- [PipeWire](https://pipewire.org) - Multimedia Processing Framework (Linux only)
+- [PortAudio](http://www.portaudio.com/) - Cross-platform Audio I/O Library (all platforms)
+
+Supported output formats:
 
 - RAW (PCM 16bit interleaved)
 - WAV, RF64 ([libsndfile](http://www.mega-nerd.com/libsndfile/))
@@ -36,6 +37,8 @@ from the last 100 ms of captured audio.
 
 ```sh
 mkdir build && cd build
-cmake .. -DENABLE_SNDFILE=ON -DENABLE_MP3LAME=ON -DENABLE_VORBIS=ON
+cmake .. \
+  -DENABLE_ALSA=ON -DENABLE_PIPEWIRE=ON -DENABLE_PORTAUDIO=ON \
+  -DENABLE_SNDFILE=ON -DENABLE_MP3LAME=ON -DENABLE_VORBIS=ON
 make && make install
 ```

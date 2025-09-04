@@ -7,13 +7,14 @@
 #include "writer-mp3.h"
 
 #include <errno.h>
-#include <stdint.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 #include <lame/lame.h>
 
 #include "log.h"
+#include "pcm.h"
 #include "writer.h"
 
 struct writer_mp3 {

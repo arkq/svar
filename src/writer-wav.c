@@ -6,13 +6,13 @@
 
 #include "writer-wav.h"
 
-#include <errno.h>
-#include <stdint.h>
+#include <stdbool.h>
 #include <stdlib.h>
 
 #include <sndfile.h>
 
 #include "log.h"
+#include "pcm.h"
 #include "writer.h"
 
 struct writer_priv {
