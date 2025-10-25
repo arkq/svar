@@ -20,7 +20,7 @@ static int writer_raw_open(struct writer * writer, const char * pathname) {
 	struct writer_raw * w = writer->w;
 
 	writer->close(writer);
-	if ((w->f = fopen(pathname, "w")) != NULL)
+	if ((w->f = fopen(pathname, "w")) == NULL)
 		return -1;
 
 	writer->opened = true;

@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #include <ogg/ogg.h>
@@ -155,7 +156,12 @@ struct writer * writer_ogg_new(
 
 	vorbis_info_init(&w->vbs_i);
 	vorbis_comment_init(&w->vbs_c);
-	vorbis_comment_add(&w->vbs_c, comment);
+
+	if (comment != NULL) {
+		char tag[8 + strlen(comment) + 1];
+		snprintf(tag, sizeof(tag), "ENCODER=%s", comment);
+		vorbis_comment_add(&w->vbs_c, tag);
+	}
 
 	switch (vorbis_encode_init(&w->vbs_i, channels, sampling,
 				bitrate_max, bitrate_nom, bitrate_min)) {
