@@ -36,7 +36,7 @@ jobs:
           portaudio19-dev
     - uses: actions/checkout@v5
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v3
+      uses: github/codeql-action/init@v4
       with:
         languages: cpp
         queries: security-and-quality
@@ -61,4 +61,4 @@ jobs:
       working-directory: ${{ github.workspace }}/build
       run: cmake --build . --config ${{ matrix.build-type }}
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v3
+      uses: github/codeql-action/analyze@v4
