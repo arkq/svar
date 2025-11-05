@@ -45,6 +45,7 @@ struct writer {
 };
 
 struct writer * writer_raw_new(enum pcm_format format, unsigned int channels);
+const char * writer_type_to_extension(enum writer_type type);
 const char * writer_type_to_string(enum writer_type type);
 
 #endif

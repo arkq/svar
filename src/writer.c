@@ -73,7 +73,7 @@ struct writer * writer_raw_new(enum pcm_format format, unsigned int channels) {
 	return writer;
 }
 
-const char * writer_type_to_string(enum writer_type type) {
+const char * writer_type_to_extension(enum writer_type type) {
 	switch (type) {
 	case WRITER_TYPE_RAW:
 		return "raw";
@@ -81,6 +81,28 @@ const char * writer_type_to_string(enum writer_type type) {
 	case WRITER_TYPE_WAV:
 	case WRITER_TYPE_RF64:
 		return "wav";
+#endif
+#if ENABLE_MP3LAME
+	case WRITER_TYPE_MP3:
+		return "mp3";
+#endif
+#if ENABLE_VORBIS
+	case WRITER_TYPE_OGG:
+		return "ogg";
+#endif
+	}
+	return "unknown";
+}
+
+const char * writer_type_to_string(enum writer_type type) {
+	switch (type) {
+	case WRITER_TYPE_RAW:
+		return "raw";
+#if ENABLE_SNDFILE
+	case WRITER_TYPE_WAV:
+		return "wav";
+	case WRITER_TYPE_RF64:
+		return "rf64";
 #endif
 #if ENABLE_MP3LAME
 	case WRITER_TYPE_MP3:

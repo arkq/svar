@@ -135,7 +135,7 @@ static void * recorder_thread(void * arg) {
 
 			char name[PATH_MAX];
 			size_t n = strftime(name, sizeof(name), r->output_file_template, &now);
-			snprintf(&name[n], sizeof(name) - n, ".%s", writer_type_to_string(w->type));
+			snprintf(&name[n], sizeof(name) - n, ".%s", writer_type_to_extension(w->type));
 
 			if (r->verbose >= 1)
 				info("Creating new output file: %s", name);

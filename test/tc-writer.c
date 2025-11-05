@@ -176,6 +176,22 @@ START_TEST(test_writer_wav_write) {
 } END_TEST
 #endif
 
+START_TEST(test_writer_type_to_extension) {
+	ck_assert_str_eq(writer_type_to_extension(WRITER_TYPE_RAW), "raw");
+#if ENABLE_SNDFILE
+	ck_assert_str_eq(writer_type_to_extension(WRITER_TYPE_WAV), "wav");
+	ck_assert_str_eq(writer_type_to_extension(WRITER_TYPE_RF64), "wav");
+#endif
+} END_TEST
+
+START_TEST(test_writer_type_to_string) {
+	ck_assert_str_eq(writer_type_to_string(WRITER_TYPE_RAW), "raw");
+#if ENABLE_SNDFILE
+	ck_assert_str_eq(writer_type_to_string(WRITER_TYPE_WAV), "wav");
+	ck_assert_str_eq(writer_type_to_string(WRITER_TYPE_RF64), "rf64");
+#endif
+} END_TEST
+
 void tcase_init(Suite * s) {
 
 	TCase * tc = tcase_create(__FILE__);
@@ -198,5 +214,8 @@ void tcase_init(Suite * s) {
 	tcase_add_test(tc, test_writer_wav);
 	tcase_add_test(tc, test_writer_wav_write);
 #endif
+
+	tcase_add_test(tc, test_writer_type_to_extension);
+	tcase_add_test(tc, test_writer_type_to_string);
 
 }
