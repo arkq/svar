@@ -32,11 +32,12 @@ jobs:
           libogg-dev \
           libpipewire-0.3-dev \
           libsndfile1-dev \
+          libopusenc-dev \
           libvorbis-dev \
           portaudio19-dev
     - uses: actions/checkout@v5
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v3
+      uses: github/codeql-action/init@v4
       with:
         languages: cpp
         queries: security-and-quality
@@ -56,9 +57,10 @@ jobs:
         -DENABLE_PORTAUDIO=ON
         -DENABLE_MP3LAME=ON
         -DENABLE_SNDFILE=ON
+        -DENABLE_OPUS=ON
         -DENABLE_VORBIS=ON
     - name: Build
       working-directory: ${{ github.workspace }}/build
       run: cmake --build . --config ${{ matrix.build-type }}
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v3
+      uses: github/codeql-action/analyze@v4

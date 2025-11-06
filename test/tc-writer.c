@@ -17,7 +17,8 @@
 #include "writer.h"
 #include "writer-mp3.h"
 #include "writer-wav.h"
-#include "writer-ogg.h"
+#include "writer-opus.h"
+#include "writer-vorbis.h"
 
 static const uint8_t pcm_u8[10] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
 static const int16_t pcm_s16[10] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
@@ -97,16 +98,54 @@ START_TEST(test_writer_mp3_write) {
 } END_TEST
 #endif
 
-#if ENABLE_VORBIS
-START_TEST(test_writer_ogg) {
+#if ENABLE_OPUS
+START_TEST(test_writer_opus) {
 
 	struct writer * w;
-	/* For now, the U8 format is not supported in OGG writer. */
-	ck_assert_ptr_eq(w = writer_ogg_new(PCM_FORMAT_U8, 1, 16000,
+	/* For now, the U8 format is not supported in OPUS writer. */
+	ck_assert_ptr_eq(w = writer_opus_new(PCM_FORMAT_U8, 1, 16000,
+				64000, NULL), NULL);
+	ck_assert_ptr_ne(w = writer_opus_new(PCM_FORMAT_S16LE, 1, 16000,
+				64000, NULL), NULL);
+	ck_assert_uint_eq(w->type, WRITER_TYPE_OPUS);
+	ck_assert_uint_eq(w->opened, false);
+
+	w->close(w);
+	w->free(w);
+
+} END_TEST
+#endif
+
+#if ENABLE_OPUS
+START_TEST(test_writer_opus_write) {
+
+	struct writer * w;
+	const char * filename = "tc-writer.opus";
+	ck_assert_ptr_ne(w = writer_opus_new(PCM_FORMAT_S16LE, 1, 16000,
+				64000, "SVAR - test"), NULL);
+	ck_assert_int_ne(w->open(w, filename), -1);
+	ck_assert_uint_eq(w->opened, true);
+
+	w->write(w, &pcm_s16[0], 5);
+	w->write(w, &pcm_s16[5], 5);
+	w->close(w);
+
+	unlink(filename);
+	w->free(w);
+
+} END_TEST
+#endif
+
+#if ENABLE_VORBIS
+START_TEST(test_writer_vorbis) {
+
+	struct writer * w;
+	/* For now, the U8 format is not supported in VORBIS writer. */
+	ck_assert_ptr_eq(w = writer_vorbis_new(PCM_FORMAT_U8, 1, 16000,
 				32000, 64000, 96000, NULL), NULL);
-	ck_assert_ptr_ne(w = writer_ogg_new(PCM_FORMAT_S16LE, 1, 16000,
+	ck_assert_ptr_ne(w = writer_vorbis_new(PCM_FORMAT_S16LE, 1, 16000,
 				32000, 64000, 96000, NULL), NULL);
-	ck_assert_uint_eq(w->type, WRITER_TYPE_OGG);
+	ck_assert_uint_eq(w->type, WRITER_TYPE_VORBIS);
 	ck_assert_uint_eq(w->opened, false);
 
 	w->close(w);
@@ -116,11 +155,11 @@ START_TEST(test_writer_ogg) {
 #endif
 
 #if ENABLE_VORBIS
-START_TEST(test_writer_ogg_write) {
+START_TEST(test_writer_vorbis_write) {
 
 	struct writer * w;
 	const char * filename = "tc-writer.ogg";
-	ck_assert_ptr_ne(w = writer_ogg_new(PCM_FORMAT_S16LE, 1, 16000,
+	ck_assert_ptr_ne(w = writer_vorbis_new(PCM_FORMAT_S16LE, 1, 16000,
 				32000, 64000, 96000, "SVAR - test"), NULL);
 	ck_assert_int_ne(w->open(w, filename), -1);
 	ck_assert_uint_eq(w->opened, true);
@@ -205,9 +244,14 @@ void tcase_init(Suite * s) {
 	tcase_add_test(tc, test_writer_mp3_write);
 #endif
 
+#if ENABLE_OPUS
+	tcase_add_test(tc, test_writer_opus);
+	tcase_add_test(tc, test_writer_opus_write);
+#endif
+
 #if ENABLE_VORBIS
-	tcase_add_test(tc, test_writer_ogg);
-	tcase_add_test(tc, test_writer_ogg_write);
+	tcase_add_test(tc, test_writer_vorbis);
+	tcase_add_test(tc, test_writer_vorbis_write);
 #endif
 
 #if ENABLE_SNDFILE

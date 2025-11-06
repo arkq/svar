@@ -31,6 +31,7 @@ jobs:
           libogg-dev \
           libpipewire-0.3-dev \
           libsndfile1-dev \
+          libopusenc-dev \
           libvorbis-dev \
           portaudio19-dev
     - uses: actions/checkout@v5
@@ -49,6 +50,7 @@ jobs:
         ${{ matrix.audio-backend }}
         -DENABLE_MP3LAME=ON
         -DENABLE_SNDFILE=ON
+        -DENABLE_OPUS=ON
         -DENABLE_VORBIS=ON
     - name: Build
       working-directory: ${{ github.workspace }}/build

@@ -39,8 +39,11 @@
 #if ENABLE_SNDFILE
 # include "writer-wav.h"
 #endif
+#if ENABLE_OPUS
+# include "writer-opus.h"
+#endif
 #if ENABLE_VORBIS
-# include "writer-ogg.h"
+# include "writer-vorbis.h"
 #endif
 
 /* Application banner used for output file comment string. */
@@ -97,8 +100,13 @@ static void print_audio_info(void) {
 			printf("Output bit rate [kbit/s]: min=%d max=%d\n",
 					bitrate_min / 1000, bitrate_max / 1000);
 #endif
+#if ENABLE_OPUS
+		if (writer->type == WRITER_TYPE_OPUS)
+			printf("Output bit rate [kbit/s]: %d\n",
+					bitrate_nom / 1000);
+#endif
 #if ENABLE_VORBIS
-		if (writer->type == WRITER_TYPE_OGG)
+		if (writer->type == WRITER_TYPE_VORBIS)
 			printf("Output bit rate [kbit/s]: min=%d nominal=%d max=%d\n",
 					bitrate_min / 1000, bitrate_nom / 1000, bitrate_max / 1000);
 #endif
@@ -142,8 +150,10 @@ int main(int argc, char *argv[]) {
 	/* Select default output format based on available libraries. */
 #if ENABLE_SNDFILE
 	enum writer_type writer_type = WRITER_TYPE_WAV;
+#elif ENABLE_OPUS
+	enum writer_type writer_type = WRITER_TYPE_OPUS;
 #elif ENABLE_VORBIS
-	enum writer_type writer_type = WRITER_TYPE_OGG;
+	enum writer_type writer_type = WRITER_TYPE_VORBIS;
 #elif ENABLE_MP3LAME
 	enum writer_type writer_type = WRITER_TYPE_MP3;
 #else
@@ -250,8 +260,11 @@ int main(int argc, char *argv[]) {
 				WRITER_TYPE_WAV,
 				WRITER_TYPE_RF64,
 #endif
+#if ENABLE_OPUS
+				WRITER_TYPE_OPUS,
+#endif
 #if ENABLE_VORBIS
-				WRITER_TYPE_OGG,
+				WRITER_TYPE_VORBIS,
 #endif
 			};
 
@@ -379,9 +392,15 @@ int main(int argc, char *argv[]) {
 			writer_mp3_print_internals(writer);
 		break;
 #endif
+#if ENABLE_OPUS
+	case WRITER_TYPE_OPUS:
+		writer = writer_opus_new(pcm_format, pcm_channels, pcm_rate,
+				bitrate_nom, banner);
+		break;
+#endif
 #if ENABLE_VORBIS
-	case WRITER_TYPE_OGG:
-		writer = writer_ogg_new(pcm_format, pcm_channels, pcm_rate,
+	case WRITER_TYPE_VORBIS:
+		writer = writer_vorbis_new(pcm_format, pcm_channels, pcm_rate,
 				bitrate_min, bitrate_nom, bitrate_max, banner);
 		break;
 #endif

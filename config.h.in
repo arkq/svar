@@ -25,6 +25,9 @@
 /* Define to 1 if SNDFile is enabled. */
 #cmakedefine ENABLE_SNDFILE 1
 
+/* Define to 1 if Ogg Opus is enabled. */
+#cmakedefine ENABLE_OPUS 1
+
 /* Define to 1 if Ogg Vorbis is enabled. */
 #cmakedefine ENABLE_VORBIS 1
 

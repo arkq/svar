@@ -25,7 +25,7 @@ static int writer_open(struct writer * writer, const char * pathname) {
 
 	writer->close(writer);
 	if ((w->sf = sf_open(pathname, SFM_WRITE, &w->sfinfo)) == NULL) {
-		error("Couldn't create output file: %s", sf_strerror(NULL));
+		error("SF: Couldn't create output file: %s", sf_strerror(NULL));
 		return -1;
 	}
 

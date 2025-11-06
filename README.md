@@ -18,7 +18,8 @@ Supported output formats:
 - RAW (PCM 16bit interleaved)
 - WAV, RF64 ([libsndfile](http://www.mega-nerd.com/libsndfile/))
 - MP3 ([mp3lame](http://lame.sourceforge.net/))
-- OGG ([libvorbis](http://www.xiph.org/vorbis/))
+- OGG/OPUS ([libopusenc](https://opus-codec.org/))
+- OGG/VORBIS ([libvorbis](http://www.xiph.org/vorbis/))
 
 For low CPU consumption WAV is recommended - it is the default selection.
 
@@ -39,6 +40,6 @@ from the last 100 ms of captured audio.
 mkdir build && cd build
 cmake .. \
   -DENABLE_ALSA=ON -DENABLE_PIPEWIRE=ON -DENABLE_PORTAUDIO=ON \
-  -DENABLE_SNDFILE=ON -DENABLE_MP3LAME=ON -DENABLE_VORBIS=ON
+  -DENABLE_SNDFILE=ON -DENABLE_MP3LAME=ON -DENABLE_OPUS=ON -DENABLE_VORBIS=ON
 make && make install
 ```

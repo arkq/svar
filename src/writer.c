@@ -86,8 +86,12 @@ const char * writer_type_to_extension(enum writer_type type) {
 	case WRITER_TYPE_MP3:
 		return "mp3";
 #endif
+#if ENABLE_OPUS
+	case WRITER_TYPE_OPUS:
+		return "opus";
+#endif
 #if ENABLE_VORBIS
-	case WRITER_TYPE_OGG:
+	case WRITER_TYPE_VORBIS:
 		return "ogg";
 #endif
 	}
@@ -108,9 +112,13 @@ const char * writer_type_to_string(enum writer_type type) {
 	case WRITER_TYPE_MP3:
 		return "mp3";
 #endif
+#if ENABLE_OPUS
+	case WRITER_TYPE_OPUS:
+		return "opus";
+#endif
 #if ENABLE_VORBIS
-	case WRITER_TYPE_OGG:
-		return "ogg";
+	case WRITER_TYPE_VORBIS:
+		return "vorbis";
 #endif
 	}
 	return "unknown";

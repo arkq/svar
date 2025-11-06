@@ -27,8 +27,11 @@ enum writer_type {
 #if ENABLE_MP3LAME
 	WRITER_TYPE_MP3,
 #endif
+#if ENABLE_OPUS
+	WRITER_TYPE_OPUS,
+#endif
 #if ENABLE_VORBIS
-	WRITER_TYPE_OGG,
+	WRITER_TYPE_VORBIS,
 #endif
 };
 

@@ -5,7 +5,7 @@
 cmake_minimum_required(VERSION 3.11)
 
 project(svar
-	VERSION 2.0.0
+	VERSION 2.1.0
 	DESCRIPTION "Simple Voice Activated Recorder"
 	LANGUAGES C)
 
@@ -27,7 +27,8 @@ endif()
 
 option(ENABLE_MP3LAME "Enable MP3 support.")
 option(ENABLE_SNDFILE "Enable WAV support.")
-option(ENABLE_VORBIS "Enable OGG support.")
+option(ENABLE_OPUS "Enable OPUS support.")
+option(ENABLE_VORBIS "Enable VORBIS support.")
 
 configure_file(
 	${PROJECT_SOURCE_DIR}/config.h.in
@@ -77,10 +78,16 @@ if(ENABLE_MP3LAME)
 	target_link_libraries(svarcore Mp3Lame::Mp3Lame)
 endif()
 
+if(ENABLE_OPUS)
+	pkg_check_modules(OggOpus REQUIRED IMPORTED_TARGET libopusenc)
+	target_sources(svarcore PRIVATE src/writer-opus.c)
+	target_link_libraries(svarcore PkgConfig::OggOpus)
+endif()
+
 if(ENABLE_VORBIS)
-	pkg_check_modules(VorbisOgg REQUIRED IMPORTED_TARGET vorbis vorbisenc ogg)
-	target_sources(svarcore PRIVATE src/writer-ogg.c)
-	target_link_libraries(svarcore PkgConfig::VorbisOgg)
+	pkg_check_modules(OggVorbis REQUIRED IMPORTED_TARGET vorbis vorbisenc ogg)
+	target_sources(svarcore PRIVATE src/writer-vorbis.c)
+	target_link_libraries(svarcore PkgConfig::OggVorbis)
 endif()
 
 if(BUILD_TESTING)

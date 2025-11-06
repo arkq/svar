@@ -77,7 +77,7 @@ struct writer * writer_mp3_new(
 		int bitrate_min, int bitrate_max, const char * comment) {
 
 	if (format != PCM_FORMAT_S16LE) {
-		error("MP3 unsupported PCM format: %s", pcm_format_name(format));
+		error("LAME: Unsupported PCM format: %s", pcm_format_name(format));
 		return NULL;
 	}
 
