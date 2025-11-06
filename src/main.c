@@ -97,18 +97,17 @@ static void print_audio_info(void) {
 		printf("Output file type: %s\n", writer_type_to_string(writer->type));
 #if ENABLE_MP3LAME
 		if (writer->type == WRITER_TYPE_MP3)
-			printf("Output bit rate [kbit/s]: min=%d max=%d\n",
-					bitrate_min / 1000, bitrate_max / 1000);
+			printf("Output bit rate [bit/s]: min=%d max=%d\n",
+					bitrate_min, bitrate_max);
 #endif
 #if ENABLE_OPUS
 		if (writer->type == WRITER_TYPE_OPUS)
-			printf("Output bit rate [kbit/s]: %d\n",
-					bitrate_nom / 1000);
+			printf("Output bit rate [bit/s]: %d\n", bitrate_nom);
 #endif
 #if ENABLE_VORBIS
 		if (writer->type == WRITER_TYPE_VORBIS)
-			printf("Output bit rate [kbit/s]: min=%d nominal=%d max=%d\n",
-					bitrate_min / 1000, bitrate_nom / 1000, bitrate_max / 1000);
+			printf("Output bit rate [bit/s]: min=%d nominal=%d max=%d\n",
+					bitrate_min, bitrate_nom, bitrate_max);
 #endif
 	}
 }
@@ -116,7 +115,7 @@ static void print_audio_info(void) {
 int main(int argc, char *argv[]) {
 
 	int opt;
-	const char *opts = "hVvB:LD:t:c:C:f:r:R:l:o:s:m";
+	const char *opts = "hVvB:LD:t:b:c:C:f:r:R:l:o:s:m";
 	const struct option longopts[] = {
 		{ "help", no_argument, NULL, 'h' },
 		{ "version", no_argument, NULL, 'V' },
@@ -126,6 +125,7 @@ int main(int argc, char *argv[]) {
 		{ "device", required_argument, NULL, 'D' },
 		{ "file-type", required_argument, NULL, 't' },
 		{ "out-format", required_argument, NULL, 't' }, /* old alias */
+		{ "bitrate", required_argument, NULL, 'b' },
 		{ "channels", required_argument, NULL, 'c' },
 		{ "format", required_argument, NULL, 'f' },
 		{ "rate", required_argument, NULL, 'r' },
@@ -174,6 +174,7 @@ int main(int argc, char *argv[]) {
 					"  -L, --list-devices\t\tlist available audio input devices\n"
 					"  -D, --device=DEV\t\tselect audio input device (current: %s)\n"
 					"  -t, --file-type=TYPE\t\toutput file type (current: %s)\n"
+					"  -b, --bitrate=MIN:NOM:MAX\toutput bit rate (current: %u:%u:%u bit/s)\n"
 					"  -c, --channels=NUM\t\tnumber of channels (current: %u)\n"
 					"  -f, --format=FORMAT\t\tsample format (current: %s)\n"
 					"  -r, --rate=NUM\t\tsample rate (current: %u Hz)\n"
@@ -189,6 +190,7 @@ int main(int argc, char *argv[]) {
 					recorder_type_to_string(recorder_type),
 					pcm_device,
 					writer_type_to_string(writer_type),
+					bitrate_min, bitrate_nom, bitrate_max,
 					pcm_channels,
 					pcm_format_name(pcm_format),
 					pcm_rate,
@@ -284,6 +286,42 @@ int main(int argc, char *argv[]) {
 				fprintf(stderr, "}: %s\n", optarg);
 				return EXIT_FAILURE;
 			}
+
+		} break;
+
+		case 'b' /* --bitrate=SPEC */ : {
+
+			int values[3] = { 0 };
+			unsigned int parts = 0;
+
+			const char * ptr = optarg;
+			for (size_t i = 0; i < 3; i++) {
+				char * end;
+				values[i] = strtol(ptr, &end, 10);
+				if (end == ptr)
+					break;
+				ptr = end;
+				parts++;
+				if (*end != ':')
+					break;
+				ptr++;
+			}
+
+			if (*ptr != '\0') {
+				error("Invalid bit rate [NOM | MIN:MAX | MIN:NOM:MAX]: %s", optarg);
+				return EXIT_FAILURE;
+			}
+
+			if (parts == 1)
+				values[1] = values[2] = values[0];
+			else if (parts == 2) {
+				values[2] = values[1];
+				values[1] = (values[0] + values[1]) / 2;
+			}
+
+			bitrate_min = values[0];
+			bitrate_nom = values[1];
+			bitrate_max = values[2];
 
 		} break;
 

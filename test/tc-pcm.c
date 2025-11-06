@@ -32,11 +32,11 @@ START_TEST(test_pcm_rms_db) {
 	uint8_t buffer_u8[8] = { 10, 20, 30, 40, 50, 60, 70, 80 };
 	int16_t buffer_s16le[8] = { 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000 };
 
-	ck_assert_float_eq(pcm_rms_db(PCM_FORMAT_U8, buffer_u8, 0), -96.0);
-	ck_assert_float_eq(round(pcm_rms_db(PCM_FORMAT_U8, buffer_u8, 8) * 100), -338.0);
+	ck_assert_double_eq(pcm_rms_db(PCM_FORMAT_U8, buffer_u8, 0), -96.0);
+	ck_assert_double_eq(round(pcm_rms_db(PCM_FORMAT_U8, buffer_u8, 8) * 100), -338.0);
 
-	ck_assert_float_eq(pcm_rms_db(PCM_FORMAT_S16LE, buffer_s16le, 0), -96.0);
-	ck_assert_float_eq(round(pcm_rms_db(PCM_FORMAT_S16LE, buffer_s16le, 8) * 100), -1624.0);
+	ck_assert_double_eq(pcm_rms_db(PCM_FORMAT_S16LE, buffer_s16le, 0), -96.0);
+	ck_assert_double_eq(round(pcm_rms_db(PCM_FORMAT_S16LE, buffer_s16le, 8) * 100), -1624.0);
 
 } END_TEST
 
