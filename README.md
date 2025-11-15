@@ -36,10 +36,29 @@ from the last 100 ms of captured audio.
 
 ## Installation
 
+### Dependencies (Debian/Ubuntu)
+
 ```sh
-mkdir build && cd build
-cmake .. \
+# Basic build tools and CMake
+sudo apt install build-essential cmake
+# Audio backends
+sudo apt install libasound2-dev libpipewire-0.3-dev portaudio19-dev
+# Output formats
+sudo apt install libmp3lame-dev libogg-dev libsndfile1-dev libopusenc-dev libvorbis-dev
+```
+
+### Building
+
+```sh
+cmake -B build \
+  -DCMAKE_BUILD_TYPE=Release \
   -DENABLE_ALSA=ON -DENABLE_PIPEWIRE=ON -DENABLE_PORTAUDIO=ON \
   -DENABLE_SNDFILE=ON -DENABLE_MP3LAME=ON -DENABLE_OPUS=ON -DENABLE_VORBIS=ON
-make && make install
+cmake --build build
+```
+
+### Installing
+
+```sh
+sudo cmake --install build
 ```
