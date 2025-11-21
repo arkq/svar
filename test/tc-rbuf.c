@@ -75,7 +75,7 @@ START_TEST(test_rbuf_read_write) {
 
 } END_TEST
 
-void tcase_init(Suite * s) {
+int tcase_init(Suite * s) {
 
 	TCase * tc = tcase_create(__FILE__);
 	suite_add_tcase(s, tc);
@@ -83,4 +83,5 @@ void tcase_init(Suite * s) {
 	tcase_add_test(tc, test_rbuf_init);
 	tcase_add_test(tc, test_rbuf_read_write);
 
+	return 0;
 }

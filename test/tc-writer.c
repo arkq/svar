@@ -231,7 +231,7 @@ START_TEST(test_writer_type_to_string) {
 #endif
 } END_TEST
 
-void tcase_init(Suite * s) {
+int tcase_init(Suite * s) {
 
 	TCase * tc = tcase_create(__FILE__);
 	suite_add_tcase(s, tc);
@@ -262,4 +262,5 @@ void tcase_init(Suite * s) {
 	tcase_add_test(tc, test_writer_type_to_extension);
 	tcase_add_test(tc, test_writer_type_to_string);
 
+	return 0;
 }

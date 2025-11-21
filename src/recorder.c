@@ -73,7 +73,8 @@ fail:
 
 void recorder_free(
 		struct recorder * r) {
-	r->free(r);
+	if (r->free != NULL)
+		r->free(r);
 	pthread_mutex_destroy(&r->mutex);
 	pthread_cond_destroy(&r->cond);
 	free(r->output_file_template);
@@ -228,7 +229,7 @@ int recorder_monitor(
 
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC_RAW, &now);
-	if (ts_diff_ms(&now, &activation_time) < r->activation_fadeout_time_ms)
+	if (ts_diff_ms(&now, &activation_time) <= r->activation_fadeout_time_ms)
 		return 0;
 
 	return -1;

@@ -6,18 +6,21 @@
 
 #include <check.h>
 
-extern void tcase_init(Suite * s);
+extern int tcase_init(Suite * s);
 
 int main(void) {
 
 	Suite * s = suite_create(__FILE__);
 	SRunner * sr = srunner_create(s);
 
-	tcase_init(s);
+	int rv;
+	if ((rv = tcase_init(s)) != 0)
+		goto fail;
 
 	srunner_run_all(sr, CK_ENV);
-	int nf = srunner_ntests_failed(sr);
-	srunner_free(sr);
+	rv = srunner_ntests_failed(sr) == 0 ? 0 : 1;
 
-	return nf == 0 ? 0 : 1;
+fail:
+	srunner_free(sr);
+	return rv;
 }
