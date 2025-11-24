@@ -58,3 +58,12 @@ jobs:
       run: cmake --build . --config ${{ matrix.build-type }}
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v4
+
+  reuse:
+    strategy:
+      fail-fast: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: REUSE Compliance Check
+        uses: fsfe/reuse-action@v6

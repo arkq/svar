@@ -1,6 +1,12 @@
+<!--
+SPDX-FileCopyrightText: 2010-2025 Arkadiusz Bokowy and contributors
+SPDX-License-Identifier: MIT
+-->
+
 # SVAR - Simple Voice Activated Recorder
 
 [![Build Status](https://github.com/arkq/svar/actions/workflows/build-and-test.yaml/badge.svg)](https://github.com/arkq/svar/actions/workflows/build-and-test.yaml)
+[![REUSE status](https://api.reuse.software/badge/github.com/arkq/svar)](https://api.reuse.software/info/github.com/arkq/svar)
 
 It is a simple console application (low memory footprint and CPU usage) designed for recording
 audio when a specified signal level is exceeded. It is commonly known solution called Voice
