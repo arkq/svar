@@ -35,7 +35,7 @@ jobs:
           libopusenc-dev \
           libvorbis-dev \
           portaudio19-dev
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v4
       with:
@@ -64,6 +64,6 @@ jobs:
       fail-fast: false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: REUSE Compliance Check
         uses: fsfe/reuse-action@v6
