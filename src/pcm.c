@@ -4,7 +4,12 @@
  * SPDX-License-Identifier: MIT
  */
 
+#ifdef __APPLE__
+#include <libkern/OSByteOrder.h>
+#define le16toh(x) OSSwapLittleToHostInt16(x)
+#else
 #include <endian.h>
+#endif
 #include <math.h>
 #include <stdint.h>
 
