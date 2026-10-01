@@ -25,7 +25,8 @@ START_TEST(test_pcm_format_size) {
 	ck_assert_uint_eq(pcm_format_size(PCM_FORMAT_S16LE, 1024), 2048);
 	ck_assert_uint_eq(pcm_format_size(-1, 1024), 0);
 
-} END_TEST
+}
+END_TEST
 
 START_TEST(test_pcm_rms_db) {
 
@@ -38,7 +39,8 @@ START_TEST(test_pcm_rms_db) {
 	ck_assert_double_eq(pcm_rms_db(PCM_FORMAT_S16LE, buffer_s16le, 0), -96.0);
 	ck_assert_double_eq(round(pcm_rms_db(PCM_FORMAT_S16LE, buffer_s16le, 8) * 100), -1624.0);
 
-} END_TEST
+}
+END_TEST
 
 int tcase_init(Suite * s) {
 

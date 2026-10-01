@@ -58,7 +58,8 @@ START_TEST(test_writer_raw_write) {
 	unlink(filename);
 	w->free(w);
 
-} END_TEST
+}
+END_TEST
 
 #if ENABLE_MP3LAME
 START_TEST(test_writer_mp3) {
@@ -66,16 +67,17 @@ START_TEST(test_writer_mp3) {
 	struct writer * w;
 	/* For now, the U8 format is not supported in MP3 writer. */
 	ck_assert_ptr_eq(w = writer_mp3_new(PCM_FORMAT_U8, 1, 8000,
-				32000, 32000, NULL), NULL);
+	                                    32000, 32000, NULL), NULL);
 	ck_assert_ptr_ne(w = writer_mp3_new(PCM_FORMAT_S16LE, 1, 8000,
-				32000, 32000, NULL), NULL);
+	                                    32000, 32000, NULL), NULL);
 	ck_assert_uint_eq(w->type, WRITER_TYPE_MP3);
 	ck_assert_uint_eq(w->opened, false);
 
 	w->close(w);
 	w->free(w);
 
-} END_TEST
+}
+END_TEST
 #endif
 
 #if ENABLE_MP3LAME
@@ -84,7 +86,7 @@ START_TEST(test_writer_mp3_write) {
 	struct writer * w;
 	const char * filename = "tc-writer.mp3";
 	ck_assert_ptr_ne(w = writer_mp3_new(PCM_FORMAT_S16LE, 1, 8000,
-				32000, 32000, "SVAR - test"), NULL);
+	                                    32000, 32000, "SVAR - test"), NULL);
 	ck_assert_int_ne(w->open(w, filename), -1);
 	ck_assert_uint_eq(w->opened, true);
 
@@ -95,7 +97,8 @@ START_TEST(test_writer_mp3_write) {
 	unlink(filename);
 	w->free(w);
 
-} END_TEST
+}
+END_TEST
 #endif
 
 #if ENABLE_OPUS
@@ -104,16 +107,17 @@ START_TEST(test_writer_opus) {
 	struct writer * w;
 	/* For now, the U8 format is not supported in OPUS writer. */
 	ck_assert_ptr_eq(w = writer_opus_new(PCM_FORMAT_U8, 1, 16000,
-				64000, NULL), NULL);
+	                                     64000, NULL), NULL);
 	ck_assert_ptr_ne(w = writer_opus_new(PCM_FORMAT_S16LE, 1, 16000,
-				64000, NULL), NULL);
+	                                     64000, NULL), NULL);
 	ck_assert_uint_eq(w->type, WRITER_TYPE_OPUS);
 	ck_assert_uint_eq(w->opened, false);
 
 	w->close(w);
 	w->free(w);
 
-} END_TEST
+}
+END_TEST
 #endif
 
 #if ENABLE_OPUS
@@ -122,7 +126,7 @@ START_TEST(test_writer_opus_write) {
 	struct writer * w;
 	const char * filename = "tc-writer.opus";
 	ck_assert_ptr_ne(w = writer_opus_new(PCM_FORMAT_S16LE, 1, 16000,
-				64000, "SVAR - test"), NULL);
+	                                     64000, "SVAR - test"), NULL);
 	ck_assert_int_ne(w->open(w, filename), -1);
 	ck_assert_uint_eq(w->opened, true);
 
@@ -133,7 +137,8 @@ START_TEST(test_writer_opus_write) {
 	unlink(filename);
 	w->free(w);
 
-} END_TEST
+}
+END_TEST
 #endif
 
 #if ENABLE_VORBIS
@@ -142,16 +147,17 @@ START_TEST(test_writer_vorbis) {
 	struct writer * w;
 	/* For now, the U8 format is not supported in VORBIS writer. */
 	ck_assert_ptr_eq(w = writer_vorbis_new(PCM_FORMAT_U8, 1, 16000,
-				32000, 64000, 96000, NULL), NULL);
+	                                       32000, 64000, 96000, NULL), NULL);
 	ck_assert_ptr_ne(w = writer_vorbis_new(PCM_FORMAT_S16LE, 1, 16000,
-				32000, 64000, 96000, NULL), NULL);
+	                                       32000, 64000, 96000, NULL), NULL);
 	ck_assert_uint_eq(w->type, WRITER_TYPE_VORBIS);
 	ck_assert_uint_eq(w->opened, false);
 
 	w->close(w);
 	w->free(w);
 
-} END_TEST
+}
+END_TEST
 #endif
 
 #if ENABLE_VORBIS
@@ -160,7 +166,7 @@ START_TEST(test_writer_vorbis_write) {
 	struct writer * w;
 	const char * filename = "tc-writer.ogg";
 	ck_assert_ptr_ne(w = writer_vorbis_new(PCM_FORMAT_S16LE, 1, 16000,
-				32000, 64000, 96000, "SVAR - test"), NULL);
+	                                       32000, 64000, 96000, "SVAR - test"), NULL);
 	ck_assert_int_ne(w->open(w, filename), -1);
 	ck_assert_uint_eq(w->opened, true);
 
@@ -171,7 +177,8 @@ START_TEST(test_writer_vorbis_write) {
 	unlink(filename);
 	w->free(w);
 
-} END_TEST
+}
+END_TEST
 #endif
 
 #if ENABLE_SNDFILE
@@ -185,7 +192,8 @@ START_TEST(test_writer_wav) {
 	w->close(w);
 	w->free(w);
 
-} END_TEST
+}
+END_TEST
 #endif
 
 #if ENABLE_SNDFILE
@@ -212,7 +220,8 @@ START_TEST(test_writer_wav_write) {
 	unlink(filename);
 	w->free(w);
 
-} END_TEST
+}
+END_TEST
 #endif
 
 START_TEST(test_writer_type_to_extension) {
@@ -221,7 +230,8 @@ START_TEST(test_writer_type_to_extension) {
 	ck_assert_str_eq(writer_type_to_extension(WRITER_TYPE_WAV), "wav");
 	ck_assert_str_eq(writer_type_to_extension(WRITER_TYPE_RF64), "wav");
 #endif
-} END_TEST
+}
+END_TEST
 
 START_TEST(test_writer_type_to_string) {
 	ck_assert_str_eq(writer_type_to_string(WRITER_TYPE_RAW), "raw");
@@ -229,7 +239,8 @@ START_TEST(test_writer_type_to_string) {
 	ck_assert_str_eq(writer_type_to_string(WRITER_TYPE_WAV), "wav");
 	ck_assert_str_eq(writer_type_to_string(WRITER_TYPE_RF64), "rf64");
 #endif
-} END_TEST
+}
+END_TEST
 
 int tcase_init(Suite * s) {
 

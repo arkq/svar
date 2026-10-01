@@ -30,9 +30,7 @@ static void recorder_pa_list(struct recorder * r) {
 	for (PaDeviceIndex i = 0; i < count; i++) {
 		const PaDeviceInfo * info;
 		if ((info = Pa_GetDeviceInfo(i))->maxInputChannels > 0)
-			printf("%d%s\n    %s\n",
-					i, i == default_device_id ? " / default" : "",
-					info->name);
+			printf("%d%s\n    %s\n", i, i == default_device_id ? " / default" : "", info->name);
 	}
 
 }
@@ -94,8 +92,8 @@ static int recorder_pa_open(struct recorder * r, const char * device) {
 	PaError err;
 	PaStream * stream = NULL;
 	const size_t pcm_read_frames = r->rate / 10;
-	if ((err = Pa_OpenStream(&stream, &params, NULL, r->rate,
-					pcm_read_frames, paClipOff, pa_capture_callback, r)) != paNoError) {
+	if ((err = Pa_OpenStream(&stream, &params, NULL, r->rate, pcm_read_frames,
+	                         paClipOff, pa_capture_callback, r)) != paNoError) {
 		error("Couldn't open PortAudio stream: %s", Pa_GetErrorText(err));
 		goto fail;
 	}

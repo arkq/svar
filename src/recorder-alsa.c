@@ -40,7 +40,7 @@ static void recorder_alsa_list(struct recorder * r) {
 		char * io;
 		/* Get PCMs with capture capabilities. */
 		if ((io = snd_device_name_get_hint(*n, "IOID")) != NULL &&
-				strcmp(io, "Input") != 0) {
+		    strcmp(io, "Input") != 0) {
 			free(io);
 			continue;
 		}
@@ -79,7 +79,7 @@ static void recorder_alsa_free(struct recorder * r) {
 static int pcm_set_hw_params(snd_pcm_t * pcm, enum pcm_format format,
 		unsigned int * channels, unsigned int * rate) {
 
-	snd_pcm_hw_params_t *params;
+	snd_pcm_hw_params_t * params;
 	int dir = 0;
 	int err;
 
@@ -141,7 +141,7 @@ fail:
 }
 
 /* Thread function for ALSA capture. */
-static void *alsa_capture_thread(void * arg) {
+static void * alsa_capture_thread(void * arg) {
 	struct recorder * r = arg;
 	snd_pcm_t * pcm = r->r;
 

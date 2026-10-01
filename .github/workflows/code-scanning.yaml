@@ -1,5 +1,5 @@
 # SVAR - code-scanning.yaml
-# SPDX-FileCopyrightText: 2021-2025 Arkadiusz Bokowy and contributors
+# SPDX-FileCopyrightText: 2021-2026 Arkadiusz Bokowy and contributors
 # SPDX-License-Identifier: MIT
 
 name: Code Scanning
@@ -15,6 +15,21 @@ permissions:
   security-events: write
 
 jobs:
+
+  c-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install --yes --quiet --no-install-recommends \
+            uncrustify
+      - uses: actions/checkout@v7
+      - name: Run C Linter
+        run: |
+          uncrustify -c .uncrustify --replace --no-backup \
+            src/* test/* config.h.in
+          git diff --exit-code
 
   code-ql:
     strategy:
@@ -35,7 +50,7 @@ jobs:
           libopusenc-dev \
           libvorbis-dev \
           portaudio19-dev
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v7
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v4
       with:
@@ -60,10 +75,8 @@ jobs:
       uses: github/codeql-action/analyze@v4
 
   reuse:
-    strategy:
-      fail-fast: false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: REUSE Compliance Check
         uses: fsfe/reuse-action@v6

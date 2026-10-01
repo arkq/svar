@@ -164,7 +164,7 @@ struct writer * writer_vorbis_new(
 	}
 
 	switch (vorbis_encode_init(&w->vbs_i, channels, sampling,
-				bitrate_max, bitrate_nom, bitrate_min)) {
+	                           bitrate_max, bitrate_nom, bitrate_min)) {
 	case 0:
 		break;
 	case OV_EINVAL:

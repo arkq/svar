@@ -41,14 +41,14 @@ static void pw_global_callback(void * data, uint32_t id, uint32_t permissions,
 
 	if (strcmp(type, PW_TYPE_INTERFACE_Client) == 0) {
 		printf("%u", id);
-			if ((v = spa_dict_lookup(props, "application.name")) != NULL)
-				printf(" / %s", v);
+		if ((v = spa_dict_lookup(props, "application.name")) != NULL)
+			printf(" / %s", v);
 		printf("\n");
 	}
 
 	if (strcmp(type, PW_TYPE_INTERFACE_Node) == 0) {
 		if ((v = spa_dict_lookup(props, "media.class")) != NULL &&
-				strcmp(v, "Audio/Source") == 0) {
+		    strcmp(v, "Audio/Source") == 0) {
 			printf("%u", id);
 			if ((v = spa_dict_lookup(props, "node.name")) != NULL)
 				printf(" / %s", v);
@@ -142,9 +142,8 @@ static void pw_capture_callback(void * data) {
 	if (d->data == NULL)
 		return;
 
-	recorder_process(r,
-			SPA_PTROFF(d->data, d->chunk->offset, void),
-			d->chunk->size / pcm_format_size(r->format, 1));
+	recorder_process(r, SPA_PTROFF(d->data, d->chunk->offset, void),
+	                 d->chunk->size / pcm_format_size(r->format, 1));
 
 	pw_stream_queue_buffer(rr->stream, b);
 
@@ -162,26 +161,28 @@ static int recorder_pw_open(struct recorder * r, const char * device) {
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
 
 	struct pw_properties * props = pw_properties_new(
-			PW_KEY_MEDIA_TYPE, "Audio",
-			PW_KEY_MEDIA_CATEGORY, "Capture",
-			PW_KEY_MEDIA_ROLE, "DSP",
-			PW_KEY_TARGET_OBJECT, device,
-			NULL);
+		PW_KEY_MEDIA_TYPE, "Audio",
+		PW_KEY_MEDIA_CATEGORY, "Capture",
+		PW_KEY_MEDIA_ROLE, "DSP",
+		PW_KEY_TARGET_OBJECT, device,
+		NULL);
+
+	struct spa_audio_info_raw info = {
+		.format = pcm_format_mapping[r->format],
+		.channels = r->channels,
+		.rate = r->rate,
+	};
 
 	rr->stream = pw_stream_new_simple(pw_main_loop_get_loop(rr->loop), "svar",
-			props, &pw_stream_events, r);
+	                                  props, &pw_stream_events, r);
 
 	const struct spa_pod * params[1];
-	params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat,
-			&SPA_AUDIO_INFO_RAW_INIT(
-				.format = pcm_format_mapping[r->format],
-				.channels = r->channels,
-				.rate = r->rate));
+	params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
 
 	int ret;
 	if ((ret = pw_stream_connect(rr->stream, PW_DIRECTION_INPUT, PW_ID_ANY,
-					PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS,
-					params, 1)) < 0) {
+	                             PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS |
+	                             PW_STREAM_FLAG_RT_PROCESS, params, 1)) < 0) {
 		error("Couldn't connect PipeWire stream: %s", spa_strerror(ret));
 		goto fail;
 	}

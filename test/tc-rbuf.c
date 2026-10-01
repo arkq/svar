@@ -73,7 +73,8 @@ START_TEST(test_rbuf_read_write) {
 
 	rbuf_free(&rb);
 
-} END_TEST
+}
+END_TEST
 
 int tcase_init(Suite * s) {
 

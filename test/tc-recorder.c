@@ -39,7 +39,8 @@ START_TEST(test_recorder_pipewire) {
 	recorder_list_devices(rec);
 	recorder_free(rec);
 
-} END_TEST
+}
+END_TEST
 #endif
 
 #if ENABLE_PORTAUDIO
@@ -52,7 +53,8 @@ START_TEST(test_recorder_portaudio) {
 	recorder_list_devices(rec);
 	recorder_free(rec);
 
-} END_TEST
+}
+END_TEST
 #endif
 
 START_TEST(test_recorder_monitor) {
@@ -66,7 +68,8 @@ START_TEST(test_recorder_monitor) {
 
 	recorder_free(rec);
 
-} END_TEST
+}
+END_TEST
 
 START_TEST(test_recorder_process) {
 
@@ -80,7 +83,8 @@ START_TEST(test_recorder_process) {
 
 	recorder_free(rec);
 
-} END_TEST
+}
+END_TEST
 
 START_TEST(test_recorder_type_to_string) {
 #if ENABLE_ALSA
@@ -92,7 +96,8 @@ START_TEST(test_recorder_type_to_string) {
 #if ENABLE_PORTAUDIO
 	ck_assert_str_eq(recorder_type_to_string(RECORDER_TYPE_PORTAUDIO), "PortAudio");
 #endif
-} END_TEST
+}
+END_TEST
 
 int tcase_init(Suite * s) {
 

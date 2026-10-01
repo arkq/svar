@@ -91,14 +91,14 @@ static void main_loop_stop(int sig) {
 static void print_audio_info(void) {
 	printf("Selected PCM device: %s\n", pcm_device);
 	printf("Hardware parameters: %s, %d Hz, %d channel%s\n",
-			pcm_format_name(pcm_format), pcm_rate,
-			pcm_channels, pcm_channels > 1 ? "s" : "");
+	       pcm_format_name(pcm_format), pcm_rate,
+	       pcm_channels, pcm_channels > 1 ? "s" : "");
 	if (!signal_meter) {
 		printf("Output file type: %s\n", writer_type_to_string(writer->type));
 #if ENABLE_MP3LAME
 		if (writer->type == WRITER_TYPE_MP3)
 			printf("Output bit rate [bit/s]: min=%d max=%d\n",
-					bitrate_min, bitrate_max);
+			       bitrate_min, bitrate_max);
 #endif
 #if ENABLE_OPUS
 		if (writer->type == WRITER_TYPE_OPUS)
@@ -107,15 +107,15 @@ static void print_audio_info(void) {
 #if ENABLE_VORBIS
 		if (writer->type == WRITER_TYPE_VORBIS)
 			printf("Output bit rate [bit/s]: min=%d nominal=%d max=%d\n",
-					bitrate_min, bitrate_nom, bitrate_max);
+			       bitrate_min, bitrate_nom, bitrate_max);
 #endif
 	}
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char * argv[]) {
 
 	int opt;
-	const char *opts = "hVvB:LD:t:b:c:C:f:r:R:l:o:s:m";
+	const char * opts = "hVvB:LD:t:b:c:C:f:r:R:l:o:s:m";
 	const struct option longopts[] = {
 		{ "help", no_argument, NULL, 'h' },
 		{ "version", no_argument, NULL, 'V' },
@@ -163,55 +163,55 @@ int main(int argc, char *argv[]) {
 	/* arguments parser */
 	while ((opt = getopt_long(argc, argv, opts, longopts, NULL)) != -1)
 		switch (opt) {
-		case 'h' /* --help */ :
+		case 'h' /* --help */:
 			printf("Usage:\n"
-					"  %s [options] [output-template]\n"
-					"\nOptions:\n"
-					"  -h, --help\t\t\tprint recipe for a delicious cake\n"
-					"  -V, --version\t\t\tprint version number and exit\n"
-					"  -v, --verbose\t\t\tshow extra information (add more -v for more)\n"
-					"  -B, --backend=BACKEND\t\tselect audio backend (current: %s)\n"
-					"  -L, --list-devices\t\tlist available audio input devices\n"
-					"  -D, --device=DEV\t\tselect audio input device (current: %s)\n"
-					"  -t, --file-type=TYPE\t\toutput file type (current: %s)\n"
-					"  -b, --bitrate=MIN:NOM:MAX\toutput bit rate (current: %u:%u:%u bit/s)\n"
-					"  -c, --channels=NUM\t\tnumber of channels (current: %u)\n"
-					"  -f, --format=FORMAT\t\tsample format (current: %s)\n"
-					"  -r, --rate=NUM\t\tsample rate (current: %u Hz)\n"
-					"  -l, --level=NUM\t\tactivation threshold level (current: %#.1f dB)\n"
-					"  -o, --fadeout=SEC\t\tactivation fadeout time (current: %#.1f s)\n"
-					"  -s, --split=SEC\t\toutput file split time (current: %#.1f s)\n"
-					"  -m, --sig-meter\t\taudio signal level meter\n"
-					"\n"
-					"The output-template argument is a strftime(3) format string which\n"
-					"will be used for creating output file name. If not specified, the\n"
-					"default value is: %s + extension\n",
-					argv[0],
-					recorder_type_to_string(recorder_type),
-					pcm_device,
-					writer_type_to_string(writer_type),
-					bitrate_min, bitrate_nom, bitrate_max,
-					pcm_channels,
-					pcm_format_name(pcm_format),
-					pcm_rate,
-					activation_threshold_level_db,
-					activation_fadeout_time_ms * 0.001,
-					output_split_time_ms * 0.001,
-					template);
+			       "  %s [options] [output-template]\n"
+			       "\nOptions:\n"
+			       "  -h, --help\t\t\tprint recipe for a delicious cake\n"
+			       "  -V, --version\t\t\tprint version number and exit\n"
+			       "  -v, --verbose\t\t\tshow extra information (add more -v for more)\n"
+			       "  -B, --backend=BACKEND\t\tselect audio backend (current: %s)\n"
+			       "  -L, --list-devices\t\tlist available audio input devices\n"
+			       "  -D, --device=DEV\t\tselect audio input device (current: %s)\n"
+			       "  -t, --file-type=TYPE\t\toutput file type (current: %s)\n"
+			       "  -b, --bitrate=MIN:NOM:MAX\toutput bit rate (current: %u:%u:%u bit/s)\n"
+			       "  -c, --channels=NUM\t\tnumber of channels (current: %u)\n"
+			       "  -f, --format=FORMAT\t\tsample format (current: %s)\n"
+			       "  -r, --rate=NUM\t\tsample rate (current: %u Hz)\n"
+			       "  -l, --level=NUM\t\tactivation threshold level (current: %#.1f dB)\n"
+			       "  -o, --fadeout=SEC\t\tactivation fadeout time (current: %#.1f s)\n"
+			       "  -s, --split=SEC\t\toutput file split time (current: %#.1f s)\n"
+			       "  -m, --sig-meter\t\taudio signal level meter\n"
+			       "\n"
+			       "The output-template argument is a strftime(3) format string which\n"
+			       "will be used for creating output file name. If not specified, the\n"
+			       "default value is: %s + extension\n",
+			       argv[0],
+			       recorder_type_to_string(recorder_type),
+			       pcm_device,
+			       writer_type_to_string(writer_type),
+			       bitrate_min, bitrate_nom, bitrate_max,
+			       pcm_channels,
+			       pcm_format_name(pcm_format),
+			       pcm_rate,
+			       activation_threshold_level_db,
+			       activation_fadeout_time_ms * 0.001,
+			       output_split_time_ms * 0.001,
+			       template);
 			return EXIT_SUCCESS;
 
-		case 'V' /* --version */ :
+		case 'V' /* --version */:
 			printf("%s\n", PROJECT_VERSION);
 			return EXIT_SUCCESS;
 
-		case 'm' /* --sig-meter */ :
+		case 'm' /* --sig-meter */:
 			signal_meter = true;
 			break;
-		case 'v' /* --verbose */ :
+		case 'v' /* --verbose */:
 			verbose++;
 			break;
 
-		case 'B' /* --backend=BACKEND */ : {
+		case 'B' /* --backend=BACKEND */: {
 
 			const enum recorder_type types[] = {
 #if ENABLE_ALSA
@@ -244,14 +244,14 @@ int main(int argc, char *argv[]) {
 
 		} break;
 
-		case 'L' /* --list-devices */ :
+		case 'L' /* --list-devices */:
 			list_devices = true;
 			break;
-		case 'D' /* --device=DEV */ :
+		case 'D' /* --device=DEV */:
 			pcm_device = optarg;
 			break;
 
-		case 't' /* --file-type=TYPE */ : {
+		case 't' /* --file-type=TYPE */: {
 
 			const enum writer_type types[] = {
 				WRITER_TYPE_RAW,
@@ -289,7 +289,7 @@ int main(int argc, char *argv[]) {
 
 		} break;
 
-		case 'b' /* --bitrate=SPEC */ : {
+		case 'b' /* --bitrate=SPEC */: {
 
 			int values[3] = { 0 };
 			unsigned int parts = 0;
@@ -325,11 +325,11 @@ int main(int argc, char *argv[]) {
 
 		} break;
 
-		case 'c' /* --channels=NUM */ :
+		case 'c' /* --channels=NUM */:
 		case 'C':
 			pcm_channels = abs(atoi(optarg));
 			break;
-		case 'f' /* --format=FORMAT */ : {
+		case 'f' /* --format=FORMAT */: {
 
 			enum pcm_format formats[] = {
 				PCM_FORMAT_U8,
@@ -354,18 +354,18 @@ int main(int argc, char *argv[]) {
 			}
 
 		} break;
-		case 'r' /* --rate=NUM */ :
+		case 'r' /* --rate=NUM */:
 		case 'R':
 			pcm_rate = abs(atoi(optarg));
 			break;
 
-		case 'l' /* --level=NUM */ :
+		case 'l' /* --level=NUM */:
 			activation_threshold_level_db = atof(optarg);
 			break;
-		case 'o' /* --fadeout=SEC */ :
+		case 'o' /* --fadeout=SEC */:
 			activation_fadeout_time_ms = atof(optarg) * 1000;
 			break;
-		case 's' /* --split=SEC */ :
+		case 's' /* --split=SEC */:
 			output_split_time_ms = atof(optarg) * 1000;
 			break;
 
@@ -425,7 +425,7 @@ int main(int argc, char *argv[]) {
 #if ENABLE_MP3LAME
 	case WRITER_TYPE_MP3:
 		writer = writer_mp3_new(pcm_format, pcm_channels, pcm_rate,
-				bitrate_min, bitrate_max, banner);
+		                        bitrate_min, bitrate_max, banner);
 		if (verbose >= 2)
 			writer_mp3_print_internals(writer);
 		break;
@@ -433,13 +433,13 @@ int main(int argc, char *argv[]) {
 #if ENABLE_OPUS
 	case WRITER_TYPE_OPUS:
 		writer = writer_opus_new(pcm_format, pcm_channels, pcm_rate,
-				bitrate_nom, banner);
+		                         bitrate_nom, banner);
 		break;
 #endif
 #if ENABLE_VORBIS
 	case WRITER_TYPE_VORBIS:
 		writer = writer_vorbis_new(pcm_format, pcm_channels, pcm_rate,
-				bitrate_min, bitrate_nom, bitrate_max, banner);
+		                           bitrate_min, bitrate_nom, bitrate_max, banner);
 		break;
 #endif
 	}
@@ -460,7 +460,7 @@ int main(int argc, char *argv[]) {
 	recorder->verbose = verbose;
 
 	if (recorder_start(recorder, writer, template, activation_threshold_level_db,
-				activation_fadeout_time_ms, output_split_time_ms) == -1) {
+	                   activation_fadeout_time_ms, output_split_time_ms) == -1) {
 		error("Couldn't start audio recorder: %s", strerror(errno));
 		return EXIT_FAILURE;
 	}

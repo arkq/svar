@@ -33,7 +33,7 @@ static int writer_opus_open(struct writer * writer, const char * pathname) {
 	int err;
 	const int family = w->channels <= 2 ? 0 : 1;
 	if ((w->enc = ope_encoder_create_file(pathname, w->comments, w->sampling,
-				w->channels, family, &err)) == NULL) {
+	                                      w->channels, family, &err)) == NULL) {
 		error("OPUS: Couldn't create encoder: %s", ope_strerror(err));
 		errno = EINVAL;
 		return -1;

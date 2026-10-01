@@ -23,8 +23,9 @@ struct writer_mp3 {
 	FILE * fp;
 };
 
-static int lame_encode(lame_global_flags *gfp, const short int *buffer, int samples,
-		unsigned char *mp3buf, int size) {
+static int lame_encode(
+		lame_global_flags * gfp, const short int * buffer, int samples,
+		unsigned char * mp3buf, int size) {
 	if (lame_get_num_channels(gfp) == 1)
 		return lame_encode_buffer(gfp, buffer, NULL, samples, mp3buf, size);
 	return lame_encode_buffer_interleaved(gfp, (short *)buffer, samples, mp3buf, size);
