@@ -16,9 +16,9 @@
 
 #include "writer.h"
 #include "writer-mp3.h"
-#include "writer-wav.h"
 #include "writer-opus.h"
 #include "writer-vorbis.h"
+#include "writer-wav.h"
 
 static const uint8_t pcm_u8[10] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
 static const int16_t pcm_s16[10] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
@@ -51,7 +51,7 @@ START_TEST(test_writer_raw_write) {
 	uint8_t buffer[1024];
 	/* Verify the written data. */
 	ck_assert_ptr_ne(f = fopen(filename, "rb"), NULL);
-	ck_assert_uint_eq(fread(buffer, 1, sizeof(buffer), f), 10  * sizeof(uint8_t));
+	ck_assert_uint_eq(fread(buffer, 1, sizeof(buffer), f), 10 * sizeof(uint8_t));
 	ck_assert_mem_eq(buffer, pcm_u8, 10 * sizeof(uint8_t));
 	fclose(f);
 

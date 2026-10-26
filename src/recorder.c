@@ -104,7 +104,7 @@ static void * recorder_thread(void * arg) {
 	struct timespec ts_now;
 	size_t samples = 0;
 
-	while (true) {
+	for (;;) {
 
 		pthread_mutex_lock(&r->mutex);
 
